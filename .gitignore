@@ -1,0 +1,8 @@
+# 本地验证用的浏览器配置目录，别提交
+work/.chrome-profile/
+# 临时下载的隧道工具
+work/cloudflared.exe
+# 验证产出的截图
+work/**/*.png
+# 本地服务器的日志
+work/*.log

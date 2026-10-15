@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #04060c; color: #dfe8ff;
+    font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .grid { display: grid; grid-template-columns: repeat(3, 620px); gap: 14px; padding: 14px; }
+  .cell {
+    position: relative; width: 620px; height: 620px;
+    background: #04060c; border: 1px solid #16213c; border-radius: 16px; overflow: hidden;
+  }
+  .cell canvas { display: block; }
+  .num {
+    position: absolute; top: 14px; left: 18px; font-size: 15px;
+    color: #6d80a8; letter-spacing: .14em; font-weight: 600;
+  }
+  .tag {
+    position: absolute; left: 18px; bottom: 16px; right: 18px;
+    font-size: 21px; font-weight: 600; letter-spacing: .01em;
+    text-shadow: 0 2px 14px rgba(0,0,0,.95);
+  }
+  .tag small {
+    display: block; font-size: 13px; font-weight: 400; color: #93a7cc;
+    margin-top: 5px; letter-spacing: 0;
+  }
+</style>
+</head>
+<body>
+<div class="grid" id="grid"></div>
+
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+
+const SIZE = 620;
+const TEX = {
+  day: 'https://unpkg.com/three-globe@2.44.0/example/img/earth-day.jpg',
+  night: 'https://unpkg.com/three-globe@2.44.0/example/img/earth-night.jpg'
+};
+
+const CITIES = [
+  [39.90,116.41],[31.23,121.47],[22.32,114.17],[35.68,139.65],[37.57,126.98],
+  [1.35,103.82],[13.76,100.50],[19.08,72.88],[25.20,55.27],[41.01,28.98],
+  [55.76,37.62],[30.04,31.24],[-1.29,36.82],[-33.92,18.42],[51.51,-0.13],
+  [48.86,2.35],[52.52,13.41],[40.42,-3.70],[41.90,12.50],[52.37,4.90],
+  [40.71,-74.01],[34.05,-118.24],[41.88,-87.63],[43.65,-79.38],[19.43,-99.13],
+  [-23.55,-46.63],[-34.60,-58.38],[-12.05,-77.04],[-33.87,151.21],[-36.85,174.76]
+];
+
+/* ---------------- 通用工具 ---------------- */
+
+const sph = (latDeg, lonDeg, r = 1) => {
+  const la = latDeg * Math.PI / 180, lo = lonDeg * Math.PI / 180;
+  return new THREE.Vector3(r * Math.cos(la) * Math.sin(lo), r * Math.sin(la), r * Math.cos(la) * Math.cos(lo));
+};
+
+function glowSprite(inner = 'rgba(255,255,255,1)', mid = 'rgba(255,214,120,.55)') {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, inner);
+  grd.addColorStop(0.12, inner);
+  grd.addColorStop(0.30, mid);
+  grd.addColorStop(0.55, 'rgba(255,190,90,.12)');
+  grd.addColorStop(1, 'rgba(255,180,60,0)');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c);
+  t.needsUpdate = true;
+  return t;
+}
+
+function addStars(scene, count = 1700, radius = 70, size = 0.34, opacity = 0.85, color = 0xbdd2ff) {
+  const pos = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const u = Math.random() * 2 - 1;
+    const th = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.max(0, 1 - u * u));
+    pos[i * 3] = r * Math.cos(th) * radius;
+    pos[i * 3 + 1] = u * radius;
+    pos[i * 3 + 2] = r * Math.sin(th) * radius;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({
+    color, size, sizeAttenuation: true, transparent: true, opacity, depthWrite: false
+  })));
+}
+
+/** 一层菲涅尔壳，用来做大气/轮廓辉光 */
+function fresnelShell(color, power = 2.6, strength = 1.0, scale = 1.045) {
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uColor: { value: new THREE.Color(color) },
+      uPower: { value: power },
+      uStrength: { value: strength }
+    },
+    vertexShader: `
+      varying vec3 vN; varying vec3 vP;
+      void main() {
+        vN = normalize(normalMatrix * normal);
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vP = mv.xyz;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform vec3 uColor; uniform float uPower; uniform float uStrength;
+      varying vec3 vN; varying vec3 vP;
+      void main() {
+        float f = pow(1.0 - abs(dot(normalize(vN), normalize(-vP))), uPower);
+        gl_FragColor = vec4(uColor, 1.0) * f * uStrength;
+      }`,
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  return new THREE.Mesh(new THREE.SphereGeometry(scale, 96, 64), mat);
+}
+
+function graticules(color = 0x2fd8ff, step = 15, opacity = 0.42, r = 1.002) {
+  const verts = [];
+  const push = (a, b) => { verts.push(a.x, a.y, a.z, b.x, b.y, b.z); };
+  for (let lon = -180; lon < 180; lon += step) {
+    for (let lat = -90; lat < 90; lat += 4) push(sph(lat, lon, r), sph(lat + 4, lon, r));
+  }
+  for (let lat = -75; lat <= 75; lat += step) {
+    for (let lon = -180; lon < 180; lon += 4) push(sph(lat, lon, r), sph(lat, lon + 4, r));
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({
+    color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+}
+
+function cityPoints(radius = 1.012, size = 0.085, useSprite = false) {
+  const pos = [];
+  for (const [lat, lon] of CITIES) {
+    const v = sph(lat, lon, radius);
+    pos.push(v.x, v.y, v.z);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  const mat = useSprite
+    ? new THREE.PointsMaterial({
+        size: 0.185, map: glowSprite(), transparent: true, depthWrite: false,
+        blending: THREE.AdditiveBlending, color: 0xffffff, alphaTest: 0.01
+      })
+    : new THREE.PointsMaterial({ color: 0xffd166, size, sizeAttenuation: true });
+  return new THREE.Points(g, mat);
+}
+
+/** 城市之间的连线弧 */
+function arcs(color = 0x35e0ff, opacity = 0.5) {
+  const verts = [];
+  const pairs = [
+    [0, 14], [20, 14], [3, 21], [28, 5], [25, 13], [7, 8],
+    [2, 29], [10, 16], [9, 0], [24, 17], [12, 7], [22, 15],
+    [1, 27], [4, 19], [23, 18], [11, 6]
+  ];
+  for (const [a, b] of pairs) {
+    const p1 = sph(CITIES[a][0], CITIES[a][1]);
+    const p2 = sph(CITIES[b][0], CITIES[b][1]);
+    const mid = p1.clone().add(p2).multiplyScalar(0.5);
+    const lift = 1 + 0.20 * p1.distanceTo(p2);
+    mid.normalize().multiplyScalar(lift);
+    const curve = new THREE.QuadraticBezierCurve3(p1, mid, p2);
+    const pts = curve.getPoints(48);
+    for (let i = 0; i < pts.length - 1; i++) {
+      verts.push(pts[i].x, pts[i].y, pts[i].z, pts[i + 1].x, pts[i + 1].y, pts[i + 1].z);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({
+    color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+}
+
+/** 从白天贴图里抠出陆地点云 */
+async function landCloud(texLoader, step = 1.5, r = 1.004) {
+  const img = await texLoader.loadAsync(TEX.day);
+  const src = img.image || img;
+  const W = 720, H = 360;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(src, 0, 0, W, H);
+  const d = ctx.getImageData(0, 0, W, H).data;
+  const pos = [];
+  // 经度步长按纬度收缩，保证球面上的点距大致均匀。
+  // 直接用固定的经纬步长会让两极退化成同心螺旋，看着像伪影。
+  for (let lat = -88; lat <= 88; lat += step) {
+    const lonStep = step / Math.max(Math.cos(lat * Math.PI / 180), 0.16);
+    for (let lon = -180; lon < 180; lon += lonStep) {
+      const x = Math.min(W - 1, Math.floor((lon + 180) / 360 * W));
+      const y = Math.min(H - 1, Math.floor((90 - lat) / 180 * H));
+      const i = (y * W + x) * 4;
+      const rr = d[i], gg = d[i + 1], bb = d[i + 2];
+      const isLand = !(bb - rr > 20 && bb - gg > 12);
+      if (!isLand) continue;
+      const v = sph(lat, lon, r);
+      pos.push(v.x, v.y, v.z);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  return g;
+}
+
+/* ---------------- 六个方案 ---------------- */
+
+const loader = new THREE.TextureLoader();
+loader.setCrossOrigin('anonymous');
+
+function base3d(container, withStars = true) {
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 400);
+  camera.position.set(0, 0.85, 3.05);
+  camera.lookAt(0, 0, 0);
+
+  const renderer = new THREE.WebGLRenderer({
+    antialias: true, alpha: false, preserveDrawingBuffer: true,
+    failIfMajorPerformanceCaveat: false
+  });
+  renderer.setPixelRatio(1);
+  renderer.setSize(SIZE, SIZE);
+  renderer.setClearColor(0x04060c, 1);
+  container.appendChild(renderer.domElement);
+
+  if (withStars) addStars(scene);
+  return { scene, camera, renderer };
+}
+
+const BUILDERS = [
+  /* 1. 电影感写实：真实贴图 + 大气辉光 + 高光海面 + 星空 */
+  async (el) => {
+    const { scene, camera, renderer } = base3d(el);
+    const day = await loader.loadAsync(TEX.day);
+    day.colorSpace = THREE.SRGBColorSpace;
+    scene.add(new THREE.AmbientLight(0x2a3a5c, 1.15));
+    const sun = new THREE.DirectionalLight(0xfff2dd, 2.6);
+    sun.position.set(3.2, 1.8, 2.6);
+    scene.add(sun);
+    const globe = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 128, 96),
+      new THREE.MeshPhongMaterial({ map: day, specular: 0x2a5c8c, shininess: 14, bumpScale: 0 })
+    );
+    scene.add(globe);
+    scene.add(fresnelShell(0x4d9dff, 2.3, 1.15, 1.028));
+    scene.add(fresnelShell(0x9fd8ff, 5.5, 0.5, 1.008));
+    scene.add(cityPoints(1.014, 0, true));
+    globe.rotation.set(0.32, -0.65, 0.05);
+    return { scene, camera, renderer };
+  },
+
+  /* 2. 霓虹网格：暗球 + 发光经纬线 + 城市弧线 */
+  async (el) => {
+    const { scene, camera, renderer } = base3d(el, false);
+    const pos = new Float32Array(2600 * 3);
+    for (let i = 0; i < 2600; i++) {
+      const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
+      const rr = Math.sqrt(Math.max(0, 1 - u * u));
+      pos[i * 3] = rr * Math.cos(th) * 70;
+      pos[i * 3 + 1] = u * 70;
+      pos[i * 3 + 2] = rr * Math.sin(th) * 70;
+    }
+    const sg = new THREE.BufferGeometry();
+    sg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    scene.add(new THREE.Points(sg, new THREE.PointsMaterial({
+      color: 0x7fb2ff, size: 0.3, transparent: true, opacity: 0.55, depthWrite: false
+    })));
+
+    const core = new THREE.Mesh(
+      new THREE.SphereGeometry(0.995, 64, 48),
+      new THREE.MeshBasicMaterial({ color: 0x061524 })
+    );
+    scene.add(core);
+    scene.add(graticules(0x2fd8ff, 15, 0.5, 1.003));
+    scene.add(graticules(0x2fd8ff, 45, 0.85, 1.005));
+    scene.add(arcs(0x4affd0, 0.55));
+    scene.add(cityPoints(1.012, 0, true));
+    scene.add(fresnelShell(0x2fd8ff, 3.2, 0.85, 1.05));
+    core.rotation.y = -0.6;
+    return { scene, camera, renderer };
+  },
+
+  /* 3. 暗夜灯光：夜面城市灯光贴图 + 青色轮廓 */
+  async (el) => {
+    const { scene, camera, renderer } = base3d(el);
+    const night = await loader.loadAsync(TEX.night);
+    night.colorSpace = THREE.SRGBColorSpace;
+    const globe = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 128, 96),
+      new THREE.MeshBasicMaterial({ map: night, color: 0x9fb4d8 })
+    );
+    scene.add(globe);
+    scene.add(fresnelShell(0x3ea8ff, 2.6, 1.25, 1.03));
+    scene.add(fresnelShell(0xbee6ff, 6.0, 0.45, 1.008));
+    scene.add(cityPoints(1.014, 0, true));
+    globe.rotation.set(0.30, -0.62, 0);
+    return { scene, camera, renderer };
+  },
+
+  /* 4. 点阵地球：陆地点云，无实体球 */
+  async (el) => {
+    const { scene, camera, renderer } = base3d(el);
+    const g = await landCloud(loader, 1.4);
+    scene.add(new THREE.Points(g, new THREE.PointsMaterial({
+      color: 0x7fd8ff, size: 0.017, sizeAttenuation: true,
+      transparent: true, opacity: 0.95, depthWrite: false
+    })));
+    scene.add(fresnelShell(0x2a7fd8, 4.0, 0.35, 1.08));
+    scene.add(cityPoints(1.02, 0, true));
+    return { scene, camera, renderer };
+  },
+
+  /* 5. 低多边形宝石：面片着色 + 纬度渐变 */
+  async (el) => {
+    const { scene, camera, renderer } = base3d(el);
+    scene.add(new THREE.AmbientLight(0x1b2c4a, 1.4));
+    const key = new THREE.DirectionalLight(0xffffff, 2.2);
+    key.position.set(2.2, 2.4, 2.6);
+    scene.add(key);
+    const rim = new THREE.DirectionalLight(0x35e0ff, 1.4);
+    rim.position.set(-2.6, -1.2, -1.4);
+    scene.add(rim);
+
+    const geo = new THREE.IcosahedronGeometry(1, 5).toNonIndexed();
+    const p = geo.attributes.position;
+    const cols = [];
+    const cTop = new THREE.Color(0xa8f6ff), cMid = new THREE.Color(0x1b6fd8), cLow = new THREE.Color(0x061a36);
+    for (let i = 0; i < p.count; i++) {
+      const t = (p.getY(i) + 1) / 2;
+      const c = t > 0.5 ? cMid.clone().lerp(cTop, (t - 0.5) * 1.85) : cLow.clone().lerp(cMid, t * 2);
+      cols.push(c.r, c.g, c.b);
+    }
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+    geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+      vertexColors: true, flatShading: true, roughness: 0.50, metalness: 0.10
+    }));
+    scene.add(mesh);
+    scene.add(cityPoints(1.03, 0, true));
+    mesh.rotation.set(0.24, -0.6, 0.1);
+    return { scene, camera, renderer };
+  },
+
+  /* 6. 全息玻璃：透明球 + 线框 + 光环 */
+  async (el) => {
+    const { scene, camera, renderer } = base3d(el, false);
+    const pos = new Float32Array(2200 * 3);
+    for (let i = 0; i < 2200; i++) {
+      const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
+      const rr = Math.sqrt(Math.max(0, 1 - u * u));
+      pos[i * 3] = rr * Math.cos(th) * 70;
+      pos[i * 3 + 1] = u * 70;
+      pos[i * 3 + 2] = rr * Math.sin(th) * 70;
+    }
+    const sg = new THREE.BufferGeometry();
+    sg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    scene.add(new THREE.Points(sg, new THREE.PointsMaterial({
+      color: 0x9ec8ff, size: 0.32, transparent: true, opacity: 0.6, depthWrite: false
+    })));
+
+    scene.add(new THREE.Mesh(
+      new THREE.SphereGeometry(0.995, 64, 48),
+      new THREE.MeshBasicMaterial({ color: 0x2ad4ff, transparent: true, opacity: 0.07 })
+    ));
+    // 用稀疏经纬网代替三角线框：线框在顶点处会聚成一团，看着很碎
+    scene.add(graticules(0x6fe8ff, 30, 0.45, 1.004));
+    scene.add(graticules(0x6fe8ff, 90, 0.75, 1.006));
+    for (const tilt of [0.9, -0.55, 0.2]) {
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(1.16, 0.0035, 8, 220),
+        new THREE.MeshBasicMaterial({
+          color: 0x6fe8ff, transparent: true, opacity: 0.65,
+          blending: THREE.AdditiveBlending, depthWrite: false
+        })
+      );
+      ring.rotation.set(Math.PI / 2 + tilt, 0, tilt * 1.4);
+      scene.add(ring);
+    }
+    scene.add(cityPoints(1.012, 0, true));
+    scene.add(fresnelShell(0x2ad4ff, 3.0, 0.9, 1.05));
+    return { scene, camera, renderer };
+  }
+];
+
+const META = [
+  ['电影感写实', '真实卫星贴图，加了一层大气辉光和海面高光，背景是星空。最"正经"，放大看城市最自然。'],
+  ['霓虹网格', '暗球 + 发光经纬线 + 城市之间的弧线。仪表盘 / 科幻风，信息感最强，性能开销小。'],
+  ['暗夜灯光', '夜面城市灯光贴图 + 青色星球轮廓。地球自己是暗的，亮的是城市，适合做氛围。'],
+  ['点阵地球', '陆地由发光点拼成，没有实体球面。最轻，缩放到城市级别时细节是"点"出来的。'],
+  ['低多边形', '用切面宝石的做法，没有贴图，靠纬度渐变和棱面反光出效果。偏现代极简、不写实。'],
+  ['全息玻璃', '半透明球 + 线框 + 几道倾斜光环。最"展示品"的一种，也最不强调地理精度。']
+];
+
+const grid = document.getElementById('grid');
+const tasks = BUILDERS.map(async (build, i) => {
+  const cell = document.createElement('div');
+  cell.className = 'cell';
+  const num = document.createElement('div');
+  num.className = 'num';
+  num.textContent = String(i + 1).padStart(2, '0');
+  cell.appendChild(num);
+  grid.appendChild(cell);
+  try {
+    const { scene, camera, renderer } = await build(cell);
+    const tag = document.createElement('div');
+    tag.className = 'tag';
+    tag.innerHTML = META[i][0] + '<small>' + META[i][1] + '</small>';
+    cell.appendChild(tag);
+    const tick = () => {
+      renderer.render(scene, camera);
+      requestAnimationFrame(tick);
+    };
+    tick();
+  } catch (err) {
+    const tag = document.createElement('div');
+    tag.className = 'tag';
+    tag.textContent = '渲染失败: ' + err.message;
+    cell.appendChild(tag);
+  }
+});
+
+await Promise.all(tasks);
+document.title = 'ready';
+</script>
+</body>
+</html>
