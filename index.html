@@ -205,8 +205,10 @@ const VIS = {
 const GESTURE = {
   ALT_MIN: 0.6, ALT_MAX: 3.0,
   PITCH_LIMIT: 80,           // 度
-  YAW_GAIN: 200,             // 手掌横跨画面一次约转多少度
-  PITCH_GAIN: 130,
+  // 增益单位是"每移动一个手掌宽度转多少度"。手掌宽度约是画面宽的 1/6，
+  // 所以 60 意味着手掌横扫半个画面约转 200 度。
+  YAW_GAIN: 60,
+  PITCH_GAIN: 40,
   DEADZONE_PX: 1.5,          // 像素域死区，消掉静止时的高频抖动
   ROT_SMOOTH_MIN: 12,        // 旋转那路的 One Euro 参数
   ROT_SMOOTH_BETA: 0.05,
@@ -319,13 +321,17 @@ class OneEuro {
 
 /* ======================= 手势判定（纯函数，可单独测）======================= */
 
-/** 掌心质心与手掌尺度。用掌指关节而不是指尖，所以不受手指伸屈影响。 */
+/**
+ * 平移参考点与手掌尺度。
+ *
+ * 参考点用手腕（0），不是五个掌关节的质心。原因是手腕是手腕侧倾的支点：
+ * 侧倾时手腕不动、质心会摆，用质心的话"倾斜地轴"这个手势会顺带把地球
+ * 转走（实测一个全幅侧倾会带出约 8 度意外旋转）。用手腕就把两件事解耦了。
+ * 手腕也不受手指伸屈影响。
+ */
 function palmRef(lm) {
-  let x = 0, y = 0;
-  for (const i of HAND.PALM_IDS) { x += lm[i].x; y += lm[i].y; }
-  const n = HAND.PALM_IDS.length;
   return {
-    ref: { x: x / n, y: y / n },
+    ref: { x: lm[HAND.WRIST].x, y: lm[HAND.WRIST].y },
     scale: d2(lm[HAND.WRIST], lm[HAND.MIDDLE_MCP]) || 1e-6
   };
 }
@@ -355,6 +361,244 @@ function palmTilt(lm) {
   const dx = lm[HAND.MIDDLE_MCP].x - lm[HAND.WRIST].x;
   const dy = lm[HAND.MIDDLE_MCP].y - lm[HAND.WRIST].y;
   return Math.atan2(dx, -dy);
+}
+
+/* ============================== 手势引擎 ================================== */
+
+/**
+ * 把手部关键点变成视角指令。
+ *
+ * 只有一条主线：手的位移直接累加到角度上（拖拽），手停住就停。捏合、
+ * 比数字、双手都是在这条主线上加分支，不是模式切换——用户不需要记住
+ * "现在是什么状态"。
+ */
+function createGestureEngine(C, view) {
+  const easeInOutCubic = (k) => (k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
+
+  let frameW = 640, frameH = 480;
+  let lastNow = 0;
+
+  let prevRef = null, prevScale = 0;
+  let flick = [];
+  let coasting = null;
+  let lostFrames = 0;
+  let awaitingReacquire = false;
+  let gainRamp = 1;
+
+  let pinchActive = false, pinchBase = 0, altBase = 0;
+  let jumpCount = null, jumpSince = 0, jumpCooldownUntil = 0;
+  let flying = null;
+
+  let twoHandFrames = 0, twoGapBase = null, twoAltBase = 0, prevTwoAngle = null;
+
+  const fPinch = new OneEuro(C.PINCH_SMOOTH_MIN, C.PINCH_SMOOTH_BETA);
+  const fTilt = new OneEuro(C.TILT_SMOOTH, 0.01);
+
+  let mode = 'idle';
+  let jumpedTo = null;
+
+  function setFrame(w, h) { if (w > 0 && h > 0) { frameW = w; frameH = h; } }
+
+  function reset() {
+    prevRef = null; prevScale = 0;
+    flick.length = 0; coasting = null;
+    lostFrames = 0; awaitingReacquire = false; gainRamp = 1;
+    pinchActive = false;
+    jumpCount = null;
+    flying = null;
+    twoHandFrames = 0; twoGapBase = null; prevTwoAngle = null;
+    fPinch.reset(); fTilt.reset();
+    mode = 'idle'; jumpedTo = null;
+  }
+
+  function snapshot() {
+    return {
+      mode, jumpedTo,
+      yaw: view.yaw, pitch: view.pitch, altitude: view.altitude, tiltZ: view.tiltZ
+    };
+  }
+
+  function update(hands, nowMs, dtOverride) {
+    const dt = dtOverride || (lastNow ? Math.min(0.05, (nowMs - lastNow) / 1000) : 1 / 30);
+    lastNow = nowMs;
+    jumpedTo = null;
+
+    let ref = null, scale = 0, fs = null, tilt = 0;
+    if (hands.length) {
+      const p = palmRef(hands[0]);
+      ref = p.ref; scale = p.scale;
+      fs = fingerState(hands[0]);
+      tilt = palmTilt(hands[0]);
+    }
+
+    // 位移一律换算到像素域，再除以手掌尺度的像素值。这样横纵灵敏度一致，
+    // 而且把手凑近或拿远摄像头时灵敏度不变。
+    let movedPx = 0;
+    if (ref && prevRef) {
+      movedPx = Math.hypot((ref.x - prevRef.x) * frameW, (ref.y - prevRef.y) * frameH);
+    }
+    const moving = movedPx > C.DEADZONE_PX;
+
+    // ---- 跳视角飞行中。位移超死区立刻打断，交回给手势 ----
+    if (flying) {
+      if (moving) {
+        flying = null;
+      } else {
+        flying.t += dt;
+        const k = clamp(flying.t / flying.dur, 0, 1);
+        const e = easeInOutCubic(k);
+        view.yaw = lerp(flying.from.yaw, flying.to.yaw, e);
+        view.pitch = lerp(flying.from.pitch, flying.to.pitch, e);
+        view.altitude = lerp(flying.from.altitude, flying.to.altitude, e);
+        if (k >= 1) flying = null;
+        prevRef = ref; prevScale = scale;
+        mode = 'jumping';
+        return snapshot();
+      }
+    }
+
+    // ---- 手不见了：冻结，什么都不动，保持当前视角 ----
+    if (!hands.length) {
+      lostFrames++;
+      coasting = null;
+      flick.length = 0;
+      prevRef = null;
+      if (lostFrames >= C.LOST_FRAMES) awaitingReacquire = true;
+      mode = 'idle';
+      return snapshot();
+    }
+
+    // ---- 手刚回到画面：重置基准 + 增益渐入，避免回来那一帧被当成拖拽 ----
+    if (awaitingReacquire || prevRef === null) {
+      prevRef = ref; prevScale = scale;
+      gainRamp = 0;
+      awaitingReacquire = false;
+      lostFrames = 0;
+      flick.length = 0;
+      mode = 'rotate';
+      return snapshot();
+    }
+    lostFrames = 0;
+    gainRamp = Math.min(1, gainRamp + dt / C.REACQUIRE_SEC);
+
+    // ---- 双手模式 ----
+    if (hands.length >= 2) {
+      twoHandFrames++;
+      if (twoHandFrames < C.TWOHAND_CONFIRM) {
+        prevRef = ref; prevScale = scale;
+        return snapshot();
+      }
+      pinchActive = false;              // 双手时禁用单手捏合
+      jumpCount = null;                 // 也禁用手指计数
+      const a = palmRef(hands[0]).ref;
+      const b = palmRef(hands[1]).ref;
+      const gap = Math.hypot((a.x - b.x) * frameW, (a.y - b.y) * frameH);
+      if (gap > 1) {
+        if (twoGapBase === null) { twoGapBase = gap; twoAltBase = view.altitude; }
+        view.altitude = clamp(twoAltBase * (twoGapBase / gap), C.ALT_MIN, C.ALT_MAX);
+      }
+      const ang = Math.atan2(a.y - b.y, a.x - b.x);
+      if (prevTwoAngle !== null) {
+        let d = ang - prevTwoAngle;
+        while (d > Math.PI) d -= 2 * Math.PI;
+        while (d < -Math.PI) d += 2 * Math.PI;
+        view.yaw -= d * 180 / Math.PI * 0.6;
+      }
+      prevTwoAngle = ang;
+      prevRef = ref; prevScale = scale;
+      mode = 'twoHand';
+      return snapshot();
+    }
+    twoHandFrames = 0; twoGapBase = null; prevTwoAngle = null;
+
+    // ---- 手指计数跳视角 ----
+    // 三条同时满足：伸直 1~4 根、拇指内收、手基本静止。
+    // 拇指内收这条是关键：摊开手掌时拇指外展，所以拖拽完手停住不会误触发。
+    const eligible = fs.extended >= 1 && fs.extended <= 4 && fs.thumbIn &&
+                     !moving && nowMs >= jumpCooldownUntil;
+    if (eligible) {
+      if (jumpCount === fs.extended) {
+        if (nowMs - jumpSince >= C.JUMP_HOLD * 1000) {
+          const v = VIEWS[fs.extended - 1];
+          flying = {
+            from: { yaw: view.yaw, pitch: view.pitch, altitude: view.altitude },
+            to: v, t: 0, dur: C.FLY_SECONDS
+          };
+          jumpedTo = v.name;
+          jumpCooldownUntil = nowMs + C.JUMP_COOLDOWN * 1000;
+          jumpCount = null;
+          flick.length = 0; coasting = null;
+          prevRef = ref;
+          mode = 'jumping';
+          return snapshot();
+        }
+      } else {
+        jumpCount = fs.extended;
+        jumpSince = nowMs;
+      }
+    } else {
+      jumpCount = null;
+    }
+    const jumpPending = jumpCount !== null;
+
+    // ---- 相对捏合缩放 ----
+    // 不是把指距直接映射到高度（那是上一版的错误：手一张开地球就飞到最远）。
+    // 这里在合拢的瞬间锁定基准，之后按比例缩放，松开保持。
+    const ratio = fPinch.filter(fs.pinch, dt);
+    if (!pinchActive && ratio < C.PINCH_ENTER) {
+      pinchActive = true; pinchBase = ratio; altBase = view.altitude;
+    } else if (pinchActive && ratio > C.PINCH_EXIT) {
+      pinchActive = false;
+    } else if (pinchActive) {
+      const k = clamp(pinchBase / ratio, 0.2, 5);
+      view.altitude = clamp(altBase / k, C.ALT_MIN, C.ALT_MAX);
+    }
+
+    // ---- 拖拽旋转 ----
+    if (jumpPending) {
+      coasting = null;                  // 正在比数字，别让手抖带转地球
+      flick.length = 0;
+    } else if (moving) {
+      const dxPx = (ref.x - prevRef.x) * frameW;
+      const dyPx = (ref.y - prevRef.y) * frameH;
+      const scalePx = scale * frameW || 1;
+      const dYaw = -(dxPx / scalePx) * C.YAW_GAIN * gainRamp;     // 抓取语义：手往右推，球面往右走
+      const dPitch = (dyPx / scalePx) * C.PITCH_GAIN * gainRamp;  // 手往上推，露出南半球
+      view.yaw += dYaw;
+      view.pitch = clamp(view.pitch + dPitch, -C.PITCH_LIMIT, C.PITCH_LIMIT);
+      coasting = null;
+      flick.push({ yaw: dYaw, pitch: dPitch, dt });
+      if (flick.length > C.FLICK_WINDOW) flick.shift();
+    } else if (!coasting) {
+      // 手停住了。看刚才划得快不快：快才滑行，慢就干脆停。
+      if (flick.length >= 3) {
+        let sy = 0, sp = 0, sd = 0;
+        for (const s of flick) { sy += s.yaw; sp += s.pitch; sd += s.dt; }
+        const vy = sy / sd, vp = sp / sd;
+        if (Math.hypot(vy, vp) > C.FLICK_MIN) coasting = { yaw: vy, pitch: vp };
+      }
+      flick.length = 0;
+    }
+
+    // ---- 甩动惯性：指数衰减，低于阈值彻底停 ----
+    if (coasting) {
+      const k = Math.exp(-dt / C.FLICK_TAU);
+      view.yaw += coasting.yaw * dt;
+      view.pitch = clamp(view.pitch + coasting.pitch * dt, -C.PITCH_LIMIT, C.PITCH_LIMIT);
+      coasting.yaw *= k; coasting.pitch *= k;
+      if (Math.hypot(coasting.yaw, coasting.pitch) < C.FLICK_MIN) coasting = null;
+    }
+
+    // ---- 掌心倾斜 → 地轴。比旋转更重的平滑，免得手抖让地球晃 ----
+    const tiltDeg = fTilt.filter(tilt, dt) * 180 / Math.PI * C.TILT_GAIN;
+    view.tiltZ = clamp(tiltDeg, -C.TILT_LIMIT, C.TILT_LIMIT);
+
+    prevRef = ref; prevScale = scale;
+    mode = pinchActive ? 'pinch' : 'rotate';
+    return snapshot();
+  }
+
+  return { update, reset, setFrame, snapshot };
 }
 
 /* ============================== DOM ======================================= */
@@ -796,6 +1040,8 @@ let scene = null;
 let landmarker = null;
 let running = false;
 const view = { yaw: VIEWS[0].yaw, pitch: VIEWS[0].pitch, altitude: VIEWS[0].altitude, tiltZ: 0 };
+const engine = createGestureEngine(GESTURE, view);
+let mouseHoldUntil = 0;
 
 function drawCameraFrame(landmarks) {
   const w = $camCanvas.width, h = $camCanvas.height;
@@ -854,8 +1100,15 @@ function frame(now) {
       hands = (res && res.landmarks) || [];
     } catch (_) { hands = []; }
 
-    // 手势驱动在任务 3 之后接上来；现在只画关键点
-    updateStatusFromHands(hands);
+    // 鼠标刚动过就让手势先等一秒，否则两边会互相抢相机
+    const snap = now >= mouseHoldUntil
+      ? engine.update(hands, now)
+      : engine.snapshot();
+    const f0 = hands.length ? fingerState(hands[0]) : null;
+    $pinchFill.style.width = f0
+      ? Math.round((1 - clamp(f0.pinch / 1.5, 0, 1)) * 100) + '%'
+      : '0%';
+    updateStatusFromHands(hands, snap);
     drawCameraFrame(hands);
 
     fpsAcc += now - (fpsStamp || now);
@@ -871,20 +1124,30 @@ function frame(now) {
   scene.render();
 }
 
-function updateStatusFromHands(hands) {
+function updateStatusFromHands(hands, snap) {
   if (!hands.length) {
     setStatus('searching', '检测中', '把手放进画面');
     return;
   }
+  if (snap.mode === 'twoHand') { setStatus('active', '双手模式', '两手掌距控制远近'); return; }
+  if (snap.mode === 'jumping') { setStatus('active', '跳转中', '正在飞往预设视角'); return; }
+  if (snap.mode === 'pinch') { setStatus('active', '捏合缩放', '合拢拉近，张开推远'); return; }
   const f = fingerState(hands[0]);
   setStatus('active', '控制生效',
-    hands.length > 1 ? '双手模式' : ('伸直 ' + f.extended + ' 指'));
+    (f.thumbIn && f.extended >= 1 && f.extended <= 4)
+      ? '保持这个手势就会跳视角'
+      : ('伸直 ' + f.extended + ' 指'));
 }
 
 /** 桌面上的鼠标操作：拖动旋转、滚轮缩放。手势接管时会被暂停。 */
 function bindMouse(canvas) {
   let dragging = false, lastX = 0, lastY = 0;
+
+  /** 鼠标一动就把手势接管推迟一秒，避免鼠标和手势同时改相机 */
+  const holdGestures = () => { mouseHoldUntil = performance.now() + 1000; };
+
   canvas.addEventListener('pointerdown', (e) => {
+    holdGestures();
     dragging = true; lastX = e.clientX; lastY = e.clientY;
     canvas.setPointerCapture(e.pointerId);
   });
@@ -899,6 +1162,7 @@ function bindMouse(canvas) {
       $tip.style.opacity = '0';
     }
     if (!dragging) return;
+    holdGestures();
     const dx = e.clientX - lastX, dy = e.clientY - lastY;
     lastX = e.clientX; lastY = e.clientY;
     view.yaw -= dx * 0.28;                                  // 抓取语义
@@ -910,6 +1174,7 @@ function bindMouse(canvas) {
   });
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
+    holdGestures();
     view.altitude = clamp(view.altitude + e.deltaY * 0.0016, GESTURE.ALT_MIN, GESTURE.ALT_MAX);
   }, { passive: false });
 }
@@ -930,6 +1195,7 @@ async function startCamera() {
     if ($video.videoWidth > 0) return resolve();
     $video.addEventListener('loadeddata', resolve, { once: true });
   });
+  engine.setFrame($video.videoWidth, $video.videoHeight);
 }
 
 async function boot() {
@@ -994,12 +1260,17 @@ $bootBtn.addEventListener('click', async () => {
 
 // 调试钩子：网址带 ?debug 才挂上
 if (new URLSearchParams(location.search).has('debug')) {
+  let simNow = 0;
   window.__gesture = {
     probe(lm) {
       const p = palmRef(lm);
       return Object.assign({}, p, fingerState(lm), { tilt: palmTilt(lm) });
     },
-    reset() {},
+    reset() { engine.reset(); simNow = 0; },
+    step(hands, dt = 1 / 30) {
+      simNow += dt * 1000;
+      return engine.update(hands, simNow, dt);
+    },
     state() { return Object.assign({}, view); },
     constants: GESTURE
   };

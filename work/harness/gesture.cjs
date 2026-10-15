@@ -18,7 +18,9 @@ const P = {
   count2: POSE.counting(2),
   count3: POSE.counting(3),
   count4: POSE.counting(4),
-  pinch: POSE.pinch()
+  pinch: POSE.pinch(),
+  // 60 帧从张开到捏紧，模拟真实的渐进捏合
+  ramp: Array.from({ length: 60 }, (_, i) => POSE.pinchRamp((i + 1) / 60))
 };
 
 const CASES = [
@@ -58,6 +60,208 @@ const CASES = [
     body: `
       const f = g.probe(P.open);
       return [Math.abs(f.tilt) < 0.15, "tilt=" + f.tilt.toFixed(3)];
+    `
+  },
+
+  /* ---------------- 任务 3：拖拽旋转与甩动惯性 ---------------- */
+  {
+    name: "T3 静止的手不改变视角",
+    body: `
+      g.reset();
+      g.step([P.open], 1/30);
+      const a = g.state().yaw;
+      for (let i = 0; i < 30; i++) g.step([P.open], 1/30);
+      const d = g.state().yaw - a;
+      return [Math.abs(d) < 0.01, "yaw 漂了 " + d.toFixed(4)];
+    `
+  },
+  {
+    name: "T3 手向右移，地球跟着右转（抓取语义：经度减小）",
+    body: `
+      g.reset();
+      g.step([P.open], 1/30);
+      const before = g.state().yaw;
+      for (let i = 0; i < 20; i++) g.step([shift(P.open, 0.004 * (i + 1), 0)], 1/30);
+      const after = g.state().yaw;
+      return [after < before - 1, before.toFixed(1) + " -> " + after.toFixed(1)];
+    `
+  },
+  {
+    name: "T3 慢速停止立即静止（不滑行）",
+    body: `
+      g.reset();
+      g.step([P.open], 1/30);
+      for (let i = 0; i < 10; i++) g.step([P.open], 1/30);
+      const a = g.state().yaw;
+      for (let i = 0; i < 30; i++) g.step([P.open], 1/30);
+      const d = g.state().yaw - a;
+      return [Math.abs(d) < 0.01, "滑了 " + d.toFixed(4)];
+    `
+  },
+  {
+    name: "T3 快速划过有惯性，且最终会停",
+    body: `
+      g.reset();
+      g.step([P.open], 1/30);
+      for (let i = 0; i < 6; i++) g.step([shift(P.open, 0.05 * (i + 1), 0)], 1/30);
+      const after = g.state().yaw;
+      const HOLD = shift(P.open, 0.30, 0);
+      g.step([HOLD], 1/30);
+      const coastDelta = Math.abs(g.state().yaw - after);
+      for (let i = 0; i < 90; i++) g.step([HOLD], 1/30);
+      const settled = g.state().yaw;
+      g.step([HOLD], 1/30);
+      const finalDrift = Math.abs(g.state().yaw - settled);
+      return [coastDelta > 0.5 && finalDrift < 0.5,
+              "首帧滑行 " + coastDelta.toFixed(1) + " 度，停止后漂移 " + finalDrift.toFixed(3) + " 度"];
+    `
+  },
+
+  /* ---------------- 任务 4：相对捏合缩放 ---------------- */
+  {
+    name: "T4 张开手掌不改变缩放",
+    body: `
+      g.reset();
+      g.step([P.open], 1/30);
+      const a = g.state().altitude;
+      for (let i = 0; i < 30; i++) g.step([P.open], 1/30);
+      const d = g.state().altitude - a;
+      return [Math.abs(d) < 0.01, a.toFixed(2) + " -> " + g.state().altitude.toFixed(2)];
+    `
+  },
+  {
+    name: "T4 捏合拉近",
+    body: `
+      g.reset();
+      g.step([P.open], 1/30);
+      const before = g.state().altitude;
+      for (const h of P.ramp) g.step([h], 1/30);
+      const after = g.state().altitude;
+      return [after < before - 0.3, before.toFixed(2) + " -> " + after.toFixed(2)];
+    `
+  },
+  {
+    name: "T4 保持捏合姿势，缩放停在当前级别",
+    body: `
+      g.reset();
+      g.step([P.open], 1/30);
+      for (const h of P.ramp) g.step([h], 1/30);
+      const held = g.state().altitude;
+      const last = P.ramp[P.ramp.length - 1];
+      for (let i = 0; i < 40; i++) g.step([last], 1/30);
+      const d = Math.abs(g.state().altitude - held);
+      return [d < 0.05, "停在 " + held.toFixed(2) + "，之后漂移 " + d.toFixed(3)];
+    `
+  },
+
+  /* ---------------- 任务 5：手指计数跳视角 ---------------- */
+  {
+    name: "T5 张开手掌静止半秒不跳视角",
+    body: `
+      g.reset();
+      let jumped = null;
+      for (let i = 0; i < 40; i++) {
+        const r = g.step([P.open], 1/30);
+        if (r.jumpedTo) jumped = r.jumpedTo;
+      }
+      return [jumped === null, "误触发 " + jumped];
+    `
+  },
+  {
+    name: "T5 比 2 保持半秒跳到欧洲",
+    body: `
+      g.reset();
+      let jumped = null;
+      for (let i = 0; i < 40; i++) {
+        const r = g.step([P.count2], 1/30);
+        if (r.jumpedTo) jumped = r.jumpedTo;
+      }
+      return [jumped === "europe", "jumped=" + jumped];
+    `
+  },
+  {
+    name: "T5 比数字但手在移动时不触发",
+    body: `
+      g.reset();
+      let jumped = null;
+      for (let i = 0; i < 40; i++) {
+        const r = g.step([shift(P.count2, 0.01 * i, 0)], 1/30);
+        if (r.jumpedTo) jumped = r.jumpedTo;
+      }
+      return [jumped === null, "误触发 " + jumped];
+    `
+  },
+
+  /* ---------------- 任务 6：掌心倾斜 ---------------- */
+  {
+    name: "T6 手掌竖直时地轴不倾斜",
+    body: `
+      g.reset();
+      for (let i = 0; i < 30; i++) g.step([P.open], 1/30);
+      const t = g.state().tiltZ;
+      return [Math.abs(t) < 1, "tiltZ=" + t.toFixed(2)];
+    `
+  },
+  {
+    name: "T6 手掌侧倾地轴跟着倾，且不改变经度",
+    body: `
+      g.reset();
+      g.step([P.open], 1/30);
+      const yaw0 = g.state().yaw;
+      for (let i = 0; i < 30; i++) {
+        const h = P.open.map((p) => ({ x: p.x, y: p.y }));
+        h[9].x += 0.10;
+        g.step([h], 1/30);
+      }
+      const s = g.state();
+      return [Math.abs(s.tiltZ) > 10 && Math.abs(s.yaw - yaw0) < 1,
+              "tiltZ=" + s.tiltZ.toFixed(1) + " 度, 经度偏移 " + (s.yaw - yaw0).toFixed(3)];
+    `
+  },
+
+  /* ---------------- 任务 7：双手模式 ---------------- */
+  {
+    name: "T7 两只手时进入双手模式，单手手势被忽略",
+    body: `
+      g.reset();
+      let r = null;
+      for (let i = 0; i < 30; i++) r = g.step([P.count2, P.open], 1/30);
+      return [r.mode === "twoHand" && r.jumpedTo === null,
+              "mode=" + r.mode + " jumped=" + r.jumpedTo];
+    `
+  },
+  {
+    name: "T7 两手拉开则拉近",
+    body: `
+      g.reset();
+      g.step([P.open, P.open], 1/30);
+      const before = g.state().altitude;
+      for (let i = 0; i < 40; i++) {
+        const spread = (i + 1) * 0.004;
+        g.step([shift(P.open, -spread, 0), shift(P.open, spread, 0)], 1/30);
+      }
+      const after = g.state().altitude;
+      return [after < before - 0.2, before.toFixed(2) + " -> " + after.toFixed(2)];
+    `
+  },
+
+  /* ---------------- 手离开画面 ---------------- */
+  {
+    name: "T8 手离开画面后冻结，回到画面不跳变",
+    body: `
+      g.reset();
+      g.step([P.open], 1/30);
+      for (let i = 0; i < 10; i++) g.step([shift(P.open, 0.01 * i, 0)], 1/30);
+      for (let i = 0; i < 10; i++) g.step([], 1/30);
+      const frozen = g.state().yaw;
+      for (let i = 0; i < 10; i++) g.step([], 1/30);
+      const stillFrozen = Math.abs(g.state().yaw - frozen) < 0.01;
+      // 手从别的位置回来：这一帧只重建基准，不该产生旋转
+      const back = shift(P.open, 0.25, 0);
+      g.step([back], 1/30);
+      const afterReturn = Math.abs(g.state().yaw - frozen);
+      return [stillFrozen && afterReturn < 0.5,
+              "冻结漂移 " + stillFrozen + "，回来首帧跳 " + afterReturn.toFixed(2) + " 度"];
     `
   }
 ];
