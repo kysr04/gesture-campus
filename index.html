@@ -319,6 +319,60 @@ function deadZone(v) {
   return Math.sign(v) * clamp((a - AXIS_DEAD) / (1 - AXIS_DEAD), 0, 1);
 }
 
+/* ---------------------- 手势判定（纯函数，可单独测） --------------------- */
+
+const HAND = {
+  WRIST: 0,
+  THUMB_TIP: 4,
+  INDEX_MCP: 5,
+  MIDDLE_MCP: 9,
+  INDEX_TIP: 8,
+  PALM_IDS: [0, 5, 9, 13, 17],                    // 掌指关节，不随手指伸屈移动
+  FINGERS: [[8, 6], [12, 10], [16, 14], [20, 18]], // [指尖, 第二关节]
+  EXTEND_RATIO: 1.06,
+  THUMB_IN_RATIO: 0.9
+};
+
+const d2 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+/** 掌心质心与手掌尺度。用掌指关节而不是指尖，所以不受手指伸屈影响。 */
+function palmRef(lm) {
+  let x = 0, y = 0;
+  for (const i of HAND.PALM_IDS) { x += lm[i].x; y += lm[i].y; }
+  const n = HAND.PALM_IDS.length;
+  return {
+    ref: { x: x / n, y: y / n },
+    scale: d2(lm[HAND.WRIST], lm[HAND.MIDDLE_MCP]) || 1e-6
+  };
+}
+
+/**
+ * 手部姿态。
+ * extended 是食指/中指/无名指/小指里伸直的根数；
+ * thumbIn 是拇指内收（比数字）还是外展（摊开手掌）——手指计数靠它避免误触发；
+ * pinch 是拇指尖到食指尖的距离除以手掌尺度，越小越像捏合。
+ */
+function fingerState(lm) {
+  const wrist = lm[HAND.WRIST];
+  let extended = 0;
+  for (const [tipId, pipId] of HAND.FINGERS) {
+    if (d2(lm[tipId], wrist) > d2(lm[pipId], wrist) * HAND.EXTEND_RATIO) extended++;
+  }
+  const { scale } = palmRef(lm);
+  return {
+    extended,
+    thumbIn: d2(lm[HAND.THUMB_TIP], lm[HAND.INDEX_MCP]) / scale < HAND.THUMB_IN_RATIO,
+    pinch: d2(lm[HAND.THUMB_TIP], lm[HAND.INDEX_TIP]) / scale
+  };
+}
+
+/** 手掌竖直时返回 0，向右倾为正。单位弧度。 */
+function palmTilt(lm) {
+  const dx = lm[HAND.MIDDLE_MCP].x - lm[HAND.WRIST].x;
+  const dy = lm[HAND.MIDDLE_MCP].y - lm[HAND.WRIST].y;
+  return Math.atan2(dx, -dy);
+}
+
 /* ------------------------------ DOM -------------------------------------- */
 
 const $boot = document.getElementById('boot');
@@ -884,6 +938,11 @@ $bootBtn.addEventListener('click', async () => {
 //   __gesture.step(landmarks, dt)  →  { alt, paused, yawVel, pitchVel, pinchNorm }
 if (new URLSearchParams(location.search).has('debug')) {
   window.__gesture = {
+    // 纯判定探针：给一帧关键点，返回判定结果，不改任何状态
+    probe(lm) {
+      const p = palmRef(lm);
+      return Object.assign({}, p, fingerState(lm), { tilt: palmTilt(lm) });
+    },
     step(lm, dt = 1 / 30) {
       const alt = updateHand(lm, dt);
       return { alt, paused, yawVel, pitchVel, pinchNorm };
