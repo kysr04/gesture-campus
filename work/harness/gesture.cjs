@@ -130,27 +130,27 @@ const CASES = [
     `
   },
   {
-    name: "T4 捏合拉近",
+    name: "T4 单手捏合不再改变缩放（缩放已改为必须双手）",
     body: `
       g.reset();
       g.step([P.open], 1/30);
       const before = g.state().altitude;
       for (const h of P.ramp) g.step([h], 1/30);
       const after = g.state().altitude;
-      return [after < before - 0.3, before.toFixed(2) + " -> " + after.toFixed(2)];
+      return [Math.abs(after - before) < 0.01, before.toFixed(2) + " -> " + after.toFixed(2)];
     `
   },
   {
-    name: "T4 保持捏合姿势，缩放停在当前级别",
+    name: "T4 单手拖拽仍然只旋转、不缩放",
     body: `
       g.reset();
       g.step([P.open], 1/30);
-      for (const h of P.ramp) g.step([h], 1/30);
-      const held = g.state().altitude;
-      const last = P.ramp[P.ramp.length - 1];
-      for (let i = 0; i < 40; i++) g.step([last], 1/30);
-      const d = Math.abs(g.state().altitude - held);
-      return [d < 0.05, "停在 " + held.toFixed(2) + "，之后漂移 " + d.toFixed(3)];
+      const before = g.state();
+      for (let i = 0; i < 20; i++) g.step([shift(P.open, 0.004 * (i + 1), 0)], 1/30);
+      const after = g.state();
+      return [after.yaw < before.yaw - 1 && Math.abs(after.altitude - before.altitude) < 0.01,
+              "经度 " + before.yaw.toFixed(1) + " -> " + after.yaw.toFixed(1) +
+              "，高度 " + before.altitude.toFixed(2) + " -> " + after.altitude.toFixed(2)];
     `
   },
 
@@ -226,7 +226,9 @@ const CASES = [
       g.reset();
       let r = null;
       for (let i = 0; i < 30; i++) r = g.step([P.count2, P.open], 1/30);
-      return [r.mode === "twoHand" && r.jumpedTo === null,
+      // 其中一只手是张开手掌，所以会进缩放会话；关键是比数字没被当成跳视角
+      const twoHandMode = r.mode === "twoHand" || r.mode === "zoom";
+      return [twoHandMode && r.jumpedTo === null,
               "mode=" + r.mode + " jumped=" + r.jumpedTo];
     `
   },
@@ -281,7 +283,8 @@ const CASES = [
     body: `
       const mk = (a) => {
         const d = 0.18, co = Math.cos(a), si = Math.sin(a);
-        return [shift(P.open, -d * co, -d * si), shift(P.open, d * co, d * si)];
+        // 用两只都不张开的手，避免进入缩放会话（缩放会话里锚点手是会转地球的）
+        return [shift(P.count2, -d * co, -d * si), shift(P.count2, d * co, d * si)];
       };
       g.reset();
       g.step(mk(0), 1/30);
@@ -302,7 +305,8 @@ const CASES = [
       for (let i = 0; i < 5; i++) g.step([P.open, shift(P.open, 0.35, 0)], 1/30);
       const r1 = g.step([P.open], 1/30);
       const r2 = g.step([P.open, shift(P.open, 0.35, 0)], 1/30);
-      return [r1.mode === "twoHand" && r2.mode === "twoHand",
+      const stillMulti = (m) => m === "twoHand" || m === "zoom";
+      return [stillMulti(r1.mode) && stillMulti(r2.mode),
               "闪断时 " + r1.mode + "，恢复后 " + r2.mode];
     `
   },
@@ -314,6 +318,55 @@ const CASES = [
       let r = null;
       for (let i = 0; i < 10; i++) r = g.step([P.open], 1/30);
       return [r.mode !== "twoHand", "退出后 mode=" + r.mode];
+    `
+  },
+  {
+    name: "T7 一只手张开手掌时，两手距离变化才缩放",
+    body: `
+      // 一只张开（锚点），另一只不张开（控制手）
+      const mk = (t) => [shift(P.open, -t, 0), shift(P.count2, t, 0)];
+      g.reset();
+      g.step(mk(0.05), 1/30);
+      for (let i = 0; i < 5; i++) g.step(mk(0.05), 1/30);
+      const before = g.state().altitude;
+      let last = null;
+      for (let i = 1; i <= 30; i++) last = g.step(mk(0.05 + 0.004 * i), 1/30);
+      const after = g.state().altitude;
+      return [last.mode === "zoom" && after < before - 0.2,
+              "mode=" + last.mode + "，高度 " + before.toFixed(2) + " -> " + after.toFixed(2)];
+    `
+  },
+  {
+    name: "T7 两手都不张开时，改变距离不缩放",
+    body: `
+      const mk = (t) => [shift(P.count2, -t, 0), shift(P.count2, t, 0)];
+      g.reset();
+      g.step(mk(0.05), 1/30);
+      for (let i = 0; i < 5; i++) g.step(mk(0.05), 1/30);
+      const before = g.state().altitude;
+      let last = null;
+      for (let i = 1; i <= 30; i++) last = g.step(mk(0.05 + 0.004 * i), 1/30);
+      const after = g.state().altitude;
+      return [last.mode !== "zoom" && Math.abs(after - before) < 0.01,
+              "mode=" + last.mode + "，高度 " + before.toFixed(2) + " -> " + after.toFixed(2)];
+    `
+  },
+  {
+    name: "T7 缩放期间移动控制手不带转地球（锚点手负责旋转）",
+    body: `
+      const mk = (t) => [P.open, shift(P.count2, 0.10 + t, 0)];
+      g.reset();
+      g.step(mk(0), 1/30);
+      for (let i = 0; i < 5; i++) g.step(mk(0), 1/30);
+      const y0 = g.state().yaw;
+      let maxDev = 0;
+      let last = null;
+      for (let i = 1; i <= 20; i++) {
+        last = g.step(mk(0.004 * i), 1/30);
+        maxDev = Math.max(maxDev, Math.abs(g.state().yaw - y0));
+      }
+      return [last.mode === "zoom" && maxDev < 1,
+              "mode=" + last.mode + "，控制手移动 " + (0.004 * 20 * 640).toFixed(0) + " 像素，经度偏移 " + maxDev.toFixed(2) + " 度"];
     `
   },
 
