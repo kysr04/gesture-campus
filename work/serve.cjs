@@ -32,9 +32,12 @@ const server = http.createServer((req, res) => {
       res.writeHead(404, { "Content-Type": "text/plain" }).end("not found: " + rel);
       return;
     }
+    // HTML 不缓存（改完刷新就能看到），其余资源长缓存——
+    // 模型 7.8MB，每次刷新都重下的话迭代根本没法进行。
+    const ext = path.extname(target).toLowerCase();
     res.writeHead(200, {
-      "Content-Type": TYPES[path.extname(target).toLowerCase()] || "application/octet-stream",
-      "Cache-Control": "no-store"
+      "Content-Type": TYPES[ext] || "application/octet-stream",
+      "Cache-Control": ext === ".html" ? "no-store" : "public, max-age=86400"
     });
     res.end(data);
   });
