@@ -55,7 +55,8 @@
   /* ---------- 右侧：地球 ---------- */
   #globe-panel { position: relative; flex: 1 1 auto; min-width: 0; height: 100%; }
   #globe { position: absolute; inset: 0; }
-  #globe canvas { display: block; touch-action: none; }
+  /* 双保险：即使将来 setSize 的行为又变了，canvas 也不会溢出容器 */
+  #globe canvas { display: block; width: 100%; height: 100%; touch-action: none; }
   #tip {
     position: absolute; pointer-events: none; padding: 4px 9px; border-radius: 7px;
     background: rgba(8, 14, 26, .92); border: 1px solid rgba(255, 209, 102, .35);
@@ -225,7 +226,8 @@ const GESTURE = {
   TILT_LIMIT: 35,            // 地轴倾斜上限，度
   TILT_GAIN: 1.0,
   TILT_SMOOTH: 5,            // 倾斜的平滑要比旋转更重
-  TWOHAND_CONFIRM: 3,        // 连续几帧看到两只手才切双手模式
+  TWOHAND_CONFIRM: 3,        // 连续几帧看到两只手才进双手模式
+  TWOHAND_EXIT: 5,           // 连续几帧只有一只手才算真的退出（防一只手闪断）
   LOST_FRAMES: 6,            // 连续几帧没检测到手判定离开
   REACQUIRE_SEC: 0.15        // 手回来后的增益渐入时长
 };
@@ -389,7 +391,8 @@ function createGestureEngine(C, view) {
   let jumpCount = null, jumpSince = 0, jumpCooldownUntil = 0;
   let flying = null;
 
-  let twoHandFrames = 0, twoGapBase = null, twoAltBase = 0, prevTwoAngle = null;
+  let twoHandFrames = 0, singleFrames = 0, twoHandActive = false;
+  let twoGapBase = null, twoAltBase = 0, twoPrevMid = null;
 
   const fPinch = new OneEuro(C.PINCH_SMOOTH_MIN, C.PINCH_SMOOTH_BETA);
   const fTilt = new OneEuro(C.TILT_SMOOTH, 0.01);
@@ -406,7 +409,8 @@ function createGestureEngine(C, view) {
     pinchActive = false;
     jumpCount = null;
     flying = null;
-    twoHandFrames = 0; twoGapBase = null; prevTwoAngle = null;
+    twoHandFrames = 0; singleFrames = 0; twoHandActive = false;
+    twoGapBase = null; twoPrevMid = null;
     fPinch.reset(); fTilt.reset();
     mode = 'idle'; jumpedTo = null;
   }
@@ -481,35 +485,64 @@ function createGestureEngine(C, view) {
     lostFrames = 0;
     gainRamp = Math.min(1, gainRamp + dt / C.REACQUIRE_SEC);
 
-    // ---- 双手模式 ----
-    if (hands.length >= 2) {
-      twoHandFrames++;
-      if (twoHandFrames < C.TWOHAND_CONFIRM) {
-        prevRef = ref; prevScale = scale;
-        return snapshot();
-      }
+    // ---- 双手模式的进出 ----
+    // 进入要连续看到两只手，退出要连续只看到一只手。双阈值是为了让
+    // 一只手闪断一帧不至于掉出模式——那会造成基准重置和视角跳变。
+    if (hands.length >= 2) { twoHandFrames++; singleFrames = 0; }
+    else { singleFrames++; twoHandFrames = 0; }
+
+    if (!twoHandActive && twoHandFrames >= C.TWOHAND_CONFIRM) {
+      twoHandActive = true;
+      twoGapBase = null;                // 重新采样基准
+      twoPrevMid = null;
+    }
+    if (twoHandActive && singleFrames >= C.TWOHAND_EXIT) {
+      twoHandActive = false;
+      twoGapBase = null;
+      twoPrevMid = null;
+      prevRef = null;                   // 回到单手的下一帧重新建立基准，避免跳变
+    }
+
+    if (twoHandActive) {
       pinchActive = false;              // 双手时禁用单手捏合
       jumpCount = null;                 // 也禁用手指计数
-      const a = palmRef(hands[0]).ref;
-      const b = palmRef(hands[1]).ref;
-      const gap = Math.hypot((a.x - b.x) * frameW, (a.y - b.y) * frameH);
+
+      // 一只手短暂丢失：冻结，不切换也不跳变
+      if (hands.length < 2) {
+        mode = 'twoHand';
+        return snapshot();
+      }
+
+      const pa = palmRef(hands[0]);
+      const pb = palmRef(hands[1]);
+      const mid = { x: (pa.ref.x + pb.ref.x) / 2, y: (pa.ref.y + pb.ref.y) / 2 };
+      const gap = Math.hypot((pa.ref.x - pb.ref.x) * frameW, (pa.ref.y - pb.ref.y) * frameH);
+
+      // 缩放：两手距离，相对映射。两手张开 = 拉近，和触屏捏合的方向一致。
       if (gap > 1) {
         if (twoGapBase === null) { twoGapBase = gap; twoAltBase = view.altitude; }
         view.altitude = clamp(twoAltBase * (twoGapBase / gap), C.ALT_MIN, C.ALT_MAX);
       }
-      const ang = Math.atan2(a.y - b.y, a.x - b.x);
-      if (prevTwoAngle !== null) {
-        let d = ang - prevTwoAngle;
-        while (d > Math.PI) d -= 2 * Math.PI;
-        while (d < -Math.PI) d += 2 * Math.PI;
-        view.yaw -= d * 180 / Math.PI * 0.6;
+
+      // 旋转：两手掌心的中点位移，和单手拖拽同一套增益与平滑。
+      // 这样单手双手切换时旋转手感是连续的，不会突变。
+      // （旧的"两手连线角度"驱动已删除：意图难表达、误触发多。）
+      if (twoPrevMid) {
+        const dxPx = (mid.x - twoPrevMid.x) * frameW;
+        const dyPx = (mid.y - twoPrevMid.y) * frameH;
+        if (Math.hypot(dxPx, dyPx) > C.DEADZONE_PX) {
+          const scalePx = ((pa.scale + pb.scale) / 2) * frameW || 1;
+          view.yaw -= (dxPx / scalePx) * C.YAW_GAIN;
+          view.pitch = clamp(view.pitch + (dyPx / scalePx) * C.PITCH_GAIN, -C.PITCH_LIMIT, C.PITCH_LIMIT);
+        }
       }
-      prevTwoAngle = ang;
+      twoPrevMid = mid;
+
       prevRef = ref; prevScale = scale;
       mode = 'twoHand';
       return snapshot();
     }
-    twoHandFrames = 0; twoGapBase = null; prevTwoAngle = null;
+    twoGapBase = null; twoPrevMid = null;
 
     // ---- 手指计数跳视角 ----
     // 三条同时满足：伸直 1~4 根、拇指内收、手基本静止。
@@ -840,7 +873,10 @@ async function createScene(container, onStage) {
   function resize() {
     const w = container.clientWidth || 1;
     const h = container.clientHeight || 1;
-    renderer.setSize(w, h, false);
+    // 第三参数必须是 true（默认值）。传 false 表示"别动 canvas 的 CSS 尺寸"，
+    // 那样在 2 倍屏（iPad）上 canvas 会按设备像素尺寸显示，比容器大一倍，
+    // 用户只能看到左上角四分之一。桌面是 1 倍屏，所以截图里看不出这个问题。
+    renderer.setSize(w, h, true);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
   }

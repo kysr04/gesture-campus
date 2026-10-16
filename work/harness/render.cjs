@@ -25,7 +25,9 @@ const EXPECT = {
     executablePath: CHROME,
     headless: true,
     viewport: { width: 1100, height: 760 },
-    deviceScaleFactor: 1,
+    // 必须是 2 倍屏，跟 iPad 一致。用 1 倍屏跑的话，
+    // "canvas 尺寸被设成设备像素" 这类 bug 在桌面上完全看不出来。
+    deviceScaleFactor: 2,
     args: [
       "--enable-unsafe-swiftshader",
       "--use-gl=angle",
@@ -59,7 +61,30 @@ const EXPECT = {
   await page.waitForTimeout(2500);
   await page.screenshot({ path: OUT });
 
-  const report = { stats, checks: [], errors: errors.slice(0, 10), screenshot: OUT };
+  // 画布必须正好铺满容器。溢出的表现是用户只能看到地球的左上角四分之一。
+  const fit = await page.evaluate(() => {
+    const host = document.getElementById("globe");
+    const cv = host && host.querySelector("canvas");
+    if (!cv) return null;
+    const c = cv.getBoundingClientRect();
+    const h = host.getBoundingClientRect();
+    return {
+      canvasW: Math.round(c.width), canvasH: Math.round(c.height),
+      hostW: Math.round(h.width), hostH: Math.round(h.height),
+      drawingBuffer: cv.width + "x" + cv.height,
+      dpr: window.devicePixelRatio
+    };
+  });
+
+  const report = { stats, fit, checks: [], errors: errors.slice(0, 10), screenshot: OUT };
+  if (fit) {
+    report.checks.push({
+      key: "canvas 铺满容器",
+      value: fit.canvasW + "x" + fit.canvasH + " vs " + fit.hostW + "x" + fit.hostH,
+      expect: "两者一致（误差 1px 内）",
+      ok: Math.abs(fit.canvasW - fit.hostW) <= 1 && Math.abs(fit.canvasH - fit.hostH) <= 1
+    });
+  }
   if (stats && !stats.error) {
     for (const [key, [lo, hi]] of Object.entries(EXPECT)) {
       const v = stats[key];

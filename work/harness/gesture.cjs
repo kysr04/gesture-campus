@@ -247,6 +247,77 @@ const CASES = [
 
   /* ---------------- 手离开画面 ---------------- */
   {
+    name: "T7 两手一起平移会旋转地球（双手也管俯仰）",
+    body: `
+      const mk = (t) => [shift(P.open, t, 0), shift(P.open, 0.35 + t, 0)];
+      g.reset();
+      g.step(mk(0), 1/30);
+      for (let i = 0; i < 3; i++) g.step(mk(0), 1/30);
+      const before = g.state();
+      for (let i = 1; i <= 20; i++) g.step(mk(0.004 * i), 1/30);
+      const after = g.state();
+      return [after.yaw < before.yaw - 1,
+              "经度 " + before.yaw.toFixed(1) + " -> " + after.yaw.toFixed(1)];
+    `
+  },
+  {
+    name: "T7 两手一起上下移动会改变俯仰（这是原来缺的能力）",
+    body: `
+      const mk = (t) => [shift(P.open, 0, t), shift(P.open, 0.35, t)];
+      g.reset();
+      g.step(mk(0), 1/30);
+      for (let i = 0; i < 3; i++) g.step(mk(0), 1/30);
+      const before = g.state().pitch;
+      // 步长要够：死区是 1.5 像素，而画面高 480，纵向同样的归一化步长
+      // 换算出来的像素比横向少，所以纵向要用更大的步长才能越过死区。
+      for (let i = 1; i <= 20; i++) g.step(mk(0.006 * i), 1/30);
+      const after = g.state().pitch;
+      return [Math.abs(after - before) > 1,
+              "纬度 " + before.toFixed(1) + " -> " + after.toFixed(1)];
+    `
+  },
+  {
+    name: "T7 绕中点在原地转动两手连线，不再驱动地球",
+    body: `
+      const mk = (a) => {
+        const d = 0.18, co = Math.cos(a), si = Math.sin(a);
+        return [shift(P.open, -d * co, -d * si), shift(P.open, d * co, d * si)];
+      };
+      g.reset();
+      g.step(mk(0), 1/30);
+      for (let i = 0; i < 4; i++) g.step(mk(0), 1/30);
+      const y0 = g.state().yaw;
+      let maxDev = 0;
+      for (let i = 1; i <= 20; i++) {
+        g.step(mk(i * Math.PI / 40), 1/30);
+        maxDev = Math.max(maxDev, Math.abs(g.state().yaw - y0));
+      }
+      return [maxDev < 1, "连线转了约 90 度，经度最大偏移 " + maxDev.toFixed(2) + " 度"];
+    `
+  },
+  {
+    name: "T7 一只手闪断一帧不退出双手模式",
+    body: `
+      g.reset();
+      for (let i = 0; i < 5; i++) g.step([P.open, shift(P.open, 0.35, 0)], 1/30);
+      const r1 = g.step([P.open], 1/30);
+      const r2 = g.step([P.open, shift(P.open, 0.35, 0)], 1/30);
+      return [r1.mode === "twoHand" && r2.mode === "twoHand",
+              "闪断时 " + r1.mode + "，恢复后 " + r2.mode];
+    `
+  },
+  {
+    name: "T7 持续单手会退回单手模式",
+    body: `
+      g.reset();
+      for (let i = 0; i < 5; i++) g.step([P.open, shift(P.open, 0.35, 0)], 1/30);
+      let r = null;
+      for (let i = 0; i < 10; i++) r = g.step([P.open], 1/30);
+      return [r.mode !== "twoHand", "退出后 mode=" + r.mode];
+    `
+  },
+
+  {
     name: "T8 手离开画面后冻结，回到画面不跳变",
     body: `
       g.reset();
