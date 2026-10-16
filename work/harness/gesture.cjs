@@ -20,7 +20,9 @@ const P = {
   count4: POSE.counting(4),
   pinch: POSE.pinch(),
   // 60 帧从张开到捏紧，模拟真实的渐进捏合
-  ramp: Array.from({ length: 60 }, (_, i) => POSE.pinchRamp((i + 1) / 60))
+  ramp: Array.from({ length: 60 }, (_, i) => POSE.pinchRamp((i + 1) / 60)),
+  // 21 档捏合程度，t=0 完全张开、t=1 捏紧。用于双手缩放的控制手
+  pinchSteps: Array.from({ length: 21 }, (_, i) => POSE.pinchRamp(i / 20))
 };
 
 const CASES = [
@@ -233,17 +235,25 @@ const CASES = [
     `
   },
   {
-    name: "T7 两手拉开则拉近",
+    name: "T7 控制手张开手指放大、捏合缩小（这是新方向：捏合 = 推远）",
     body: `
+      const anchor = P.open;
+      const ctl = (i) => shift(P.pinchSteps[i], 0.30, 0);   // i=0 张开，i=20 捏紧
       g.reset();
-      g.step([P.open, P.open], 1/30);
-      const before = g.state().altitude;
-      for (let i = 0; i < 40; i++) {
-        const spread = (i + 1) * 0.004;
-        g.step([shift(P.open, -spread, 0), shift(P.open, spread, 0)], 1/30);
-      }
-      const after = g.state().altitude;
-      return [after < before - 0.2, before.toFixed(2) + " -> " + after.toFixed(2)];
+      // 从中等开合开始建立基准。真实使用时不会一上来就捏到底，
+      // 而且拿极值当基准会让钳位的不对称暴露出来。
+      for (let i = 0; i < 6; i++) g.step([anchor, ctl(10)], 1/30);
+      const mid = g.state().altitude;
+      for (let i = 9; i >= 0; i--) g.step([anchor, ctl(i)], 1/30);       // 张开 → 放大
+      for (let i = 0; i < 12; i++) g.step([anchor, ctl(0)], 1/30);       // 保持，等滤波跟上
+      const near = g.state().altitude;
+      let last = null;
+      for (let i = 1; i <= 20; i++) last = g.step([anchor, ctl(i)], 1/30); // 捏合 → 缩小
+      for (let i = 0; i < 12; i++) last = g.step([anchor, ctl(20)], 1/30);// 保持，等滤波跟上
+      const far = g.state().altitude;
+      return [last.mode === "zoom" && near < mid - 0.2 && far > near + 0.2,
+              "基准 " + mid.toFixed(2) + "，张开后 " + near.toFixed(2) +
+              "（放大），捏合后 " + far.toFixed(2) + "（缩小）"];
     `
   },
 
@@ -321,18 +331,18 @@ const CASES = [
     `
   },
   {
-    name: "T7 一只手张开手掌时，两手距离变化才缩放",
+    name: "T7 两手距离变化不再影响缩放",
     body: `
-      // 一只张开（锚点），另一只不张开（控制手）
-      const mk = (t) => [shift(P.open, -t, 0), shift(P.count2, t, 0)];
+      const anchor = P.open;
+      const mk = (t) => [anchor, shift(P.count2, 0.10 + t, 0)];
       g.reset();
-      g.step(mk(0.05), 1/30);
-      for (let i = 0; i < 5; i++) g.step(mk(0.05), 1/30);
+      g.step(mk(0), 1/30);
+      for (let i = 0; i < 5; i++) g.step(mk(0), 1/30);
       const before = g.state().altitude;
       let last = null;
-      for (let i = 1; i <= 30; i++) last = g.step(mk(0.05 + 0.004 * i), 1/30);
+      for (let i = 1; i <= 20; i++) last = g.step(mk(0.012 * i), 1/30);
       const after = g.state().altitude;
-      return [last.mode === "zoom" && after < before - 0.2,
+      return [last.mode === "zoom" && Math.abs(after - before) < 0.05,
               "mode=" + last.mode + "，高度 " + before.toFixed(2) + " -> " + after.toFixed(2)];
     `
   },

@@ -218,6 +218,11 @@ const GESTURE = {
   OPEN_PALM_MIN: 4,          // 伸直几根手指算"张开手掌"（缩放锚点的条件）
   ZOOM_ENTER: 3,             // 连续几帧满足才进入缩放会话
   ZOOM_EXIT: 5,              // 连续几帧不满足才退出
+  // 指距比的自然跨度很大（捏紧约 0.1，张开约 2.3，二十多倍），而高度只有五倍，
+  // 所以用 0.7 的指数把它压平一些；用 1.0 的话手指稍微一动就顶到钳位上限。
+  ZOOM_PINCH_GAIN: 0.7,
+  ZOOM_RATIO_MIN: 0.05,      // 指距比的钳位范围，比自然跨度再宽一点留余量
+  ZOOM_RATIO_MAX: 20,
   FLICK_TAU: 0.5,            // 甩动惯性的衰减时间常数，秒
   FLICK_MIN: 12,             // 低于这个角速度就不滑行，直接停
   FLICK_WINDOW: 6,
@@ -392,10 +397,12 @@ function createGestureEngine(C, view) {
   let flying = null;
 
   let twoHandFrames = 0, singleFrames = 0, twoHandActive = false;
-  let twoGapBase = null, twoAltBase = 0, twoPrevMid = null;
+  let twoPrevMid = null;
   let zoomActive = false, zoomFrames = 0, zoomIdleFrames = 0, anchorPrev = null;
+  let zoomBasePinch = null, zoomBaseAlt = 0, zoomAnchorIsFirst = null;
 
   const fTilt = new OneEuro(C.TILT_SMOOTH, 0.01);
+  const fZoomPinch = new OneEuro(2.5, 0.02);
 
   let mode = 'idle';
   let jumpedTo = null;
@@ -412,11 +419,12 @@ function createGestureEngine(C, view) {
     flick.length = 0; coasting = null;
     lostFrames = 0; awaitingReacquire = false; gainRamp = 1;
     zoomActive = false; zoomFrames = 0; zoomIdleFrames = 0; anchorPrev = null;
+    zoomBasePinch = null; zoomAnchorIsFirst = null;
     jumpCount = null;
     flying = null;
     twoHandFrames = 0; singleFrames = 0; twoHandActive = false;
-    twoGapBase = null; twoPrevMid = null;
-    fTilt.reset();
+    twoPrevMid = null;
+    fTilt.reset(); fZoomPinch.reset();
     mode = 'idle'; jumpedTo = null;
   }
 
@@ -498,12 +506,12 @@ function createGestureEngine(C, view) {
 
     if (!twoHandActive && twoHandFrames >= C.TWOHAND_CONFIRM) {
       twoHandActive = true;
-      twoGapBase = null;                // 重新采样基准
+      zoomBasePinch = null;             // 重新采样缩放基准
       twoPrevMid = null;
     }
     if (twoHandActive && singleFrames >= C.TWOHAND_EXIT) {
       twoHandActive = false;
-      twoGapBase = null;
+      zoomBasePinch = null;
       twoPrevMid = null;
       prevRef = null;                   // 回到单手的下一帧重新建立基准，避免跳变
     }
@@ -527,15 +535,34 @@ function createGestureEngine(C, view) {
       // 缩放会话的进出用双阈值，手掌姿势抖一下不会反复进出
       if (aOpen || bOpen) { zoomFrames++; zoomIdleFrames = 0; }
       else { zoomIdleFrames++; zoomFrames = 0; }
-      if (!zoomActive && zoomFrames >= C.ZOOM_ENTER) { zoomActive = true; twoGapBase = null; }
+      if (!zoomActive && zoomFrames >= C.ZOOM_ENTER) {
+        zoomActive = true; zoomBasePinch = null;
+        fZoomPinch.reset();             // 滤波器也要清，否则基准会取到上一轮残留的滞后值
+      }
       if (zoomActive && zoomIdleFrames >= C.ZOOM_EXIT) {
-        zoomActive = false; twoGapBase = null; anchorPrev = null;
+        zoomActive = false; zoomBasePinch = null; anchorPrev = null;
       }
 
       if (zoomActive) {
-        // 张开的那只手当锚点；两只都张开时取第一只
-        const anchor = aOpen ? pa : pb;
-        const anchorScale = aOpen ? pa.scale : pb.scale;
+        // 选锚点（张开的那只手）。两只都张开时，取离上一帧锚点更近的那只——
+        // MediaPipe 每帧返回的手序不保证稳定，不这样做角色会来回翻转、视角乱跳。
+        let anchorIsFirst;
+        if (aOpen !== bOpen) {
+          anchorIsFirst = aOpen;
+        } else if (anchorPrev) {
+          const da = Math.hypot(pa.ref.x - anchorPrev.x, pa.ref.y - anchorPrev.y);
+          const db = Math.hypot(pb.ref.x - anchorPrev.x, pb.ref.y - anchorPrev.y);
+          anchorIsFirst = da <= db;
+        } else {
+          anchorIsFirst = true;
+        }
+        const anchor = anchorIsFirst ? pa : pb;
+        const anchorScale = anchorIsFirst ? pa.scale : pb.scale;
+        const controlFingers = anchorIsFirst ? fb : fa;
+
+        // 锚点换手了就重建缩放基准，否则会跳一下
+        if (zoomAnchorIsFirst !== null && zoomAnchorIsFirst !== anchorIsFirst) zoomBasePinch = null;
+        zoomAnchorIsFirst = anchorIsFirst;
 
         // 旋转只由锚点手驱动。这样控制手来回移动缩放时，地球不会被带转——
         // 这正是"一只手掌打开、另一只手控制远近"这套分工的意义。
@@ -550,11 +577,15 @@ function createGestureEngine(C, view) {
         }
         anchorPrev = { x: anchor.ref.x, y: anchor.ref.y };
 
-        // 缩放：两手距离，相对映射。张开 = 拉近，和触屏捏合方向一致。
-        const gap = Math.hypot((pa.ref.x - pb.ref.x) * frameW, (pa.ref.y - pb.ref.y) * frameH);
-        if (gap > 1) {
-          if (twoGapBase === null) { twoGapBase = gap; twoAltBase = view.altitude; }
-          view.altitude = clamp(twoAltBase * (twoGapBase / gap), C.ALT_MIN, C.ALT_MAX);
+        // 缩放由控制手自己决定：看它自己的手指开合，和另一只手无关。
+        // 捏合 = 缩小（推远），张开 = 放大（拉近）。
+        // 仍然是相对映射：进入会话时锁定基准指距和基准高度，之后按比例变化，
+        // 否则手一张开地球就会瞬间飞到某个固定距离。
+        const p = fZoomPinch.filter(controlFingers.pinch, dt);
+        if (p > 1e-4) {
+          if (zoomBasePinch === null) { zoomBasePinch = p; zoomBaseAlt = view.altitude; }
+          const ratio = clamp(p / zoomBasePinch, C.ZOOM_RATIO_MIN, C.ZOOM_RATIO_MAX);
+          view.altitude = clamp(zoomBaseAlt / Math.pow(ratio, C.ZOOM_PINCH_GAIN), C.ALT_MIN, C.ALT_MAX);
         }
 
         twoPrevMid = null;              // 退出缩放时不要拿旧基准去转
@@ -581,7 +612,7 @@ function createGestureEngine(C, view) {
       mode = 'twoHand';
       return snapshot();
     }
-    twoGapBase = null; twoPrevMid = null;
+    twoPrevMid = null; zoomBasePinch = null;
 
     // ---- 手指计数跳视角 ----
     // 三条同时满足：伸直 1~4 根、拇指内收、手基本静止。
@@ -660,7 +691,15 @@ function createGestureEngine(C, view) {
     return snapshot();
   }
 
-  return { update, reset, setFrame, snapshot };
+  return {
+    update, reset, setFrame, snapshot,
+    // 只在 ?debug 下通过调试钩子暴露，用来排查缩放之类的内部状态
+    _dbg: () => ({
+      zoomActive, zoomBasePinch, zoomBaseAlt, zoomFrames, zoomIdleFrames,
+      anchorIsFirst: zoomAnchorIsFirst, twoHandActive, singleFrames,
+      pinchFiltered: fZoomPinch.xPrev
+    })
+  };
 }
 
 /* ============================== DOM ======================================= */
@@ -1196,7 +1235,7 @@ function updateStatusFromHands(hands, snap) {
   }
   if (snap.mode === 'twoHand') { setStatus('active', '双手模式', '两手掌距控制远近'); return; }
   if (snap.mode === 'jumping') { setStatus('active', '跳转中', '正在飞往预设视角'); return; }
-  if (snap.mode === 'zoom') { setStatus('active', '缩放中', '张开的那只手当锚点，另一只手拉近推远'); return; }
+  if (snap.mode === 'zoom') { setStatus('active', '缩放中', '控制手捏合推远，张开拉近'); return; }
   const f = fingerState(hands[0]);
   setStatus('active', '控制生效',
     (f.thumbIn && f.extended >= 1 && f.extended <= 4)
@@ -1336,6 +1375,7 @@ if (new URLSearchParams(location.search).has('debug')) {
       simNow += dt * 1000;
       return engine.update(hands, simNow, dt);
     },
+    dbg() { return engine._dbg(); },
     state() { return Object.assign({}, view); },
     constants: GESTURE
   };
