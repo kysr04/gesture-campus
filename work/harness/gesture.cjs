@@ -178,7 +178,7 @@ const CASES = [
         const r = g.step([P.count2], 1/30);
         if (r.jumpedTo) jumped = r.jumpedTo;
       }
-      return [jumped === "europe", "jumped=" + jumped];
+      return [jumped === "library", "jumped=" + jumped];
     `
   },
   {
@@ -204,7 +204,7 @@ const CASES = [
         const r = g.step([shift(P.count2, j, j * 0.5)], 1/30);
         if (r.jumpedTo) jumped = r.jumpedTo;
       }
-      return [jumped === "europe", "jumped=" + jumped];
+      return [jumped === "library", "jumped=" + jumped];
     `
   },
   {
@@ -218,7 +218,7 @@ const CASES = [
         const r = g.step([h], 1/30);
         if (r.jumpedTo) jumped = r.jumpedTo;
       }
-      return [jumped === "europe", "jumped=" + jumped];
+      return [jumped === "library", "jumped=" + jumped];
     `
   },
 

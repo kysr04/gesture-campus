@@ -1,13 +1,24 @@
-# 把最新的 index.html 同步到 dist，然后发布到 Cloudflare Pages。
-# 直接跑: powershell -NoProfile -ExecutionPolicy Bypass -File work\deploy.ps1
+# Sync the latest files into dist/ and publish to Cloudflare Pages.
+# Run: powershell -NoProfile -ExecutionPolicy Bypass -File work\deploy.ps1
+#
+# Keep this file ASCII-only. PowerShell 5.1 reads .ps1 as ANSI/GBK, so non-ASCII
+# bytes get mangled -- and mangled bytes inside a comment can swallow the next
+# statement. That is exactly how the campus data copy silently broke once.
 $ErrorActionPreference = "Stop"
 
-# 注意：这个脚本里不能写中文路径字面量。PowerShell 5.1 按 ANSI 读 .ps1，
-# 中文会变成乱码。所以先切目录，后面一律用相对路径。
-Set-Location "F:\项目\前端交互网页"
+Set-Location -LiteralPath ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..")))
 
 Copy-Item -LiteralPath "index.html" -Destination "dist\index.html" -Force
 Copy-Item -LiteralPath "hand_landmarker.task" -Destination "dist\hand_landmarker.task" -Force
 
-Write-Output "已同步 dist，开始发布..."
+# Campus data must ship too. heights.json travels with it so building heights can
+# be corrected later by editing that one file and redeploying -- no code change.
+New-Item -ItemType Directory -Force -Path "dist\campus" | Out-Null
+Copy-Item -LiteralPath "campus\campus.json" -Destination "dist\campus\campus.json" -Force
+Copy-Item -LiteralPath "campus\heights.json" -Destination "dist\campus\heights.json" -Force
+
+Write-Output "synced dist:"
+Get-ChildItem -Recurse dist | Where-Object { -not $_.PSIsContainer } |
+    ForEach-Object { "  {0}  {1}" -f $_.Name, $_.Length }
+
 & "work\deploy\node_modules\.bin\wrangler.cmd" pages deploy dist --project-name=gesture-globe --branch=main --commit-dirty=true

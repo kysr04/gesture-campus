@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #04060c; color: #dfe8ff;
+    font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .grid { display: grid; grid-template-columns: repeat(3, 620px); gap: 14px; padding: 14px; }
+  .cell { position: relative; width: 620px; height: 620px; background: #04060c;
+    border: 1px solid #16213c; border-radius: 16px; overflow: hidden; }
+  .cell canvas { display: block; }
+  .num { position: absolute; top: 14px; left: 18px; font-size: 15px; color: #6d80a8;
+    letter-spacing: .14em; font-weight: 600; }
+  .tag { position: absolute; left: 18px; bottom: 16px; right: 18px; font-size: 20px;
+    font-weight: 600; text-shadow: 0 2px 16px rgba(0,0,0,.95); }
+  .tag small { display: block; font-size: 13px; font-weight: 400; color: #93a7cc; margin-top: 5px; }
+</style>
+</head>
+<body>
+<div class="grid" id="grid"></div>
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+
+const SIZE = 620;
+const TEX_DAY = 'https://unpkg.com/three-globe@2.44.0/example/img/earth-day.jpg';
+const CITIES = [
+  [39.90,116.41],[31.23,121.47],[22.32,114.17],[35.68,139.65],[37.57,126.98],
+  [1.35,103.82],[13.76,100.50],[19.08,72.88],[25.20,55.27],[41.01,28.98],
+  [55.76,37.62],[30.04,31.24],[-1.29,36.82],[-33.92,18.42],[51.51,-0.13],
+  [48.86,2.35],[52.52,13.41],[40.42,-3.70],[41.90,12.50],[52.37,4.90],
+  [40.71,-74.01],[34.05,-118.24],[41.88,-87.63],[43.65,-79.38],[19.43,-99.13],
+  [-23.55,-46.63],[-34.60,-58.38],[-12.05,-77.04],[-33.87,151.21],[-36.85,174.76]
+];
+
+const sph = (lat, lon, r = 1) => {
+  const la = lat * Math.PI / 180, lo = lon * Math.PI / 180;
+  return new THREE.Vector3(r * Math.cos(la) * Math.sin(lo), r * Math.sin(la), r * Math.cos(la) * Math.cos(lo));
+};
+
+const loader = new THREE.TextureLoader();
+loader.setCrossOrigin('anonymous');
+
+/** 陆地点云：斐波那契球面采样，再回查陆地遮罩 */
+let LAND_CACHE = null;
+async function landPoints(count, radius) {
+  if (!LAND_CACHE) {
+    const tex = await loader.loadAsync(TEX_DAY);
+    const W = 1440, H = 720;
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(tex.image, 0, 0, W, H);
+    LAND_CACHE = { data: ctx.getImageData(0, 0, W, H).data, W, H };
+  }
+  const { data, W, H } = LAND_CACHE;
+  const pos = [];
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < count; i++) {
+    const yy = 1 - (i / (count - 1)) * 2;
+    const rad = Math.sqrt(Math.max(0, 1 - yy * yy));
+    const th = golden * i;
+    const xx = rad * Math.cos(th), zz = rad * Math.sin(th);
+    const lat = Math.asin(yy) * 180 / Math.PI;
+    const lon = Math.atan2(xx, zz) * 180 / Math.PI;
+    const px = Math.min(W - 1, Math.max(0, Math.floor((lon + 180) / 360 * W)));
+    const py = Math.min(H - 1, Math.max(0, Math.floor((90 - lat) / 180 * H)));
+    const k = (py * W + px) * 4;
+    if (data[k + 2] - data[k] > 20 && data[k + 2] - data[k + 1] > 12) continue;
+    pos.push(xx * radius, yy * radius, zz * radius);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  return g;
+}
+
+/** 带深度明暗的点材质：正对镜头的点亮，转到边缘的点暗，球体才有立体感 */
+/**
+ * 带深度明暗的点材质。
+ *
+ * size 是世界单位的点直径，uScale 是「视口高 / (2·tan(视场角/2))」。
+ * 两者相乘再除以距离才是屏幕像素数——直接拿一个"看起来像像素"的数当尺寸，
+ * 会把点画成几百像素的巨型方块，整片糊成白色（这一版就是这么踩的）。
+ */
+function depthDotMaterial(color, size, scale) {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uColor: { value: new THREE.Color(color) },
+      uSize: { value: size },
+      uScale: { value: scale }
+    },
+    vertexShader: `
+      uniform float uSize; uniform float uScale;
+      varying float vShade;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vec3 n = normalize(position);
+        vShade = clamp(dot(n, normalize(-mv.xyz)) * 1.2, 0.0, 1.0);
+        gl_PointSize = clamp(uSize * uScale / -mv.z, 1.0, 48.0);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform vec3 uColor;
+      varying float vShade;
+      void main() {
+        float d = length(gl_PointCoord - vec2(0.5));
+        float a = smoothstep(0.5, 0.12, d);
+        if (a <= 0.01) discard;
+        gl_FragColor = vec4(uColor, a * (0.10 + 0.90 * vShade));
+      }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
+  });
+}
+
+function addStars(scene, count = 1500, radius = 70) {
+  const pos = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.max(0, 1 - u * u));
+    pos[i * 3] = r * Math.cos(th) * radius;
+    pos[i * 3 + 1] = u * radius;
+    pos[i * 3 + 2] = r * Math.sin(th) * radius;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({
+    color: 0xbdd2ff, size: 0.3, sizeAttenuation: true, transparent: true, opacity: 0.8, depthWrite: false
+  })));
+}
+
+function fresnel(scale, power, strength, color) {
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uColor: { value: new THREE.Color(color) },
+      uPower: { value: power }, uStrength: { value: strength }
+    },
+    vertexShader: `
+      varying vec3 vN; varying vec3 vP;
+      void main() {
+        vN = normalize(normalMatrix * normal);
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vP = mv.xyz;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform vec3 uColor; uniform float uPower; uniform float uStrength;
+      varying vec3 vN; varying vec3 vP;
+      void main() {
+        float f = pow(1.0 - abs(dot(normalize(vN), normalize(-vP))), uPower);
+        gl_FragColor = vec4(uColor, 1.0) * f * uStrength;
+      }`,
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  return new THREE.Mesh(new THREE.SphereGeometry(scale, 64, 48), mat);
+}
+
+function graticules(step, opacity, radius) {
+  const verts = [];
+  const push = (a, b) => { verts.push(a.x, a.y, a.z, b.x, b.y, b.z); };
+  for (let lon = -180; lon < 180; lon += step) {
+    for (let lat = -90; lat < 90; lat += 4) push(sph(lat, lon, radius), sph(lat + 4, lon, radius));
+  }
+  for (let lat = -75; lat <= 75; lat += step) {
+    for (let lon = -180; lon < 180; lon += 4) push(sph(lat, lon, radius), sph(lat, lon + 4, radius));
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({
+    color: 0x6fe8ff, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+}
+
+function rings(spec) {
+  const group = new THREE.Group();
+  for (const [tilt, radius, opacity, tube] of spec) {
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(radius, tube, 6, 200),
+      new THREE.MeshBasicMaterial({
+        color: 0x7feaff, transparent: true, opacity,
+        blending: THREE.AdditiveBlending, depthWrite: false
+      })
+    );
+    ring.rotation.set(Math.PI / 2 + tilt, 0, tilt * 1.4);
+    group.add(ring);
+  }
+  return group;
+}
+
+function cityPoints(radius, size) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g2 = c.getContext('2d');
+  const grd = g2.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, 'rgba(255,255,255,1)');
+  grd.addColorStop(0.12, 'rgba(255,246,225,1)');
+  grd.addColorStop(0.30, 'rgba(255,214,120,.55)');
+  grd.addColorStop(1, 'rgba(255,180,60,0)');
+  g2.fillStyle = grd;
+  g2.fillRect(0, 0, 64, 64);
+  const tex = new THREE.CanvasTexture(c);
+  const pos = [];
+  for (const [lat, lon] of CITIES) {
+    const v = sph(lat, lon, radius);
+    pos.push(v.x, v.y, v.z);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  return new THREE.Points(geo, new THREE.PointsMaterial({
+    size, map: tex, transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending, color: 0xffffff, alphaTest: 0.01
+  }));
+}
+
+function base(container) {
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 400);
+  camera.position.set(0, 0.8, 3.05);
+  camera.lookAt(0, 0, 0);
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
+  // 预览页只比构图，用 1 倍像素比。开到 2 的话三个画布会把软件渲染的 CPU 占死，
+  // 连截图都截不出来。
+  renderer.setPixelRatio(1);
+  renderer.setSize(SIZE, SIZE);
+  renderer.setClearColor(0x04060c, 1);
+  container.appendChild(renderer.domElement);
+  addStars(scene);
+  return { scene, camera, renderer, THREE };
+}
+
+const BUILDERS = [
+  /* A：现状复刻——密网点 + 经纬网 + 三条大光环 */
+  async (el) => {
+    const { scene, camera, renderer } = base(el);
+    scene.add(new THREE.Points(await landPoints(46000, 0.978), new THREE.PointsMaterial({
+      color: 0xbdefff, size: 0.0145, sizeAttenuation: true, transparent: true, opacity: 1, depthWrite: false
+    })));
+    scene.add(new THREE.Mesh(new THREE.SphereGeometry(1.0, 48, 32),
+      new THREE.MeshBasicMaterial({ color: 0x2ad4ff, transparent: true, opacity: 0.014, depthWrite: false })));
+    scene.add(graticules(30, 0.26, 1.003));
+    scene.add(rings([[0.85, 1.22, 0.50, 0.0035], [-0.5, 1.34, 0.28, 0.0035], [0.15, 1.46, 0.18, 0.0035]]));
+    scene.add(cityPoints(1.008, 0.185));
+    scene.add(fresnel(1.05, 3.6, 0.7, 0x2ad4ff));
+    return { scene, camera, renderer };
+  },
+
+  /* B：稀疏大点 + 深度明暗，去掉经纬网，光环收小收淡 */
+  async (el) => {
+    const { scene, camera, renderer } = base(el);
+    scene.add(new THREE.Points(await landPoints(20000, 0.982), depthDotMaterial(0xa8e8ff, 0.018, 900)));
+    scene.add(new THREE.Mesh(new THREE.SphereGeometry(1.0, 48, 32),
+      new THREE.MeshBasicMaterial({ color: 0x2ad4ff, transparent: true, opacity: 0.02, depthWrite: false })));
+    scene.add(rings([[0.85, 1.14, 0.22, 0.002], [-0.5, 1.20, 0.13, 0.002]]));
+    scene.add(cityPoints(1.012, 0.20));
+    scene.add(fresnel(1.045, 3.6, 0.85, 0x2ad4ff));
+    return { scene, camera, renderer };
+  },
+
+  /* C：B 的底子，点更少更大、配色带纬度渐变，保留一道极淡经纬网 */
+  async (el) => {
+    const { scene, camera, renderer } = base(el);
+    scene.add(new THREE.Points(await landPoints(13000, 0.985), depthDotMaterial(0xcaf2ff, 0.028, 900)));
+    scene.add(new THREE.Mesh(new THREE.SphereGeometry(1.0, 48, 32),
+      new THREE.MeshBasicMaterial({ color: 0x2ad4ff, transparent: true, opacity: 0.026, depthWrite: false })));
+    scene.add(graticules(45, 0.10, 1.006));
+    scene.add(rings([[0.85, 1.16, 0.18, 0.0018]]));
+    scene.add(cityPoints(1.014, 0.215));
+    scene.add(fresnel(1.05, 3.0, 1.0, 0x2ad4ff));
+    return { scene, camera, renderer };
+  }
+];
+
+const META = [
+  ['现状', '密网点形成纱窗状摩尔纹，三条大光环横跨画面抢注意力'],
+  ['精简版', '点减到四成、每颗更大，加深度明暗；去掉经纬网，光环收小收淡'],
+  ['再精简', '点再减到三成、颗粒更明显，保留一道极淡经纬网，辉光加重']
+];
+
+const grid = document.getElementById('grid');
+await Promise.all(BUILDERS.map(async (build, i) => {
+  const cell = document.createElement('div');
+  cell.className = 'cell';
+  const num = document.createElement('div');
+  num.className = 'num';
+  num.textContent = String.fromCharCode(65 + i);
+  cell.appendChild(num);
+  grid.appendChild(cell);
+  try {
+    const { scene, camera, renderer } = await build(cell);
+    const tag = document.createElement('div');
+    tag.className = 'tag';
+    tag.innerHTML = META[i][0] + '<small>' + META[i][1] + '</small>';
+    cell.appendChild(tag);
+    const tick = () => { renderer.render(scene, camera); requestAnimationFrame(tick); };
+    tick();
+  } catch (err) {
+    const tag = document.createElement('div');
+    tag.className = 'tag';
+    tag.textContent = '渲染失败: ' + err.message;
+    cell.appendChild(tag);
+  }
+}));
+document.title = 'ready';
+</script>
+</body>
+</html>

@@ -121,10 +121,10 @@
     </div>
     <div id="pinch-wrap">手掌张开度<div id="pinch-bar"><div id="pinch-fill"></div></div></div>
     <div id="help">
-      <b>单手拖动</b> 旋转地球<br>
-      <b>一只手张开手掌</b> 另一只手拉近推远<br>
-      <b>比 1/2/3/4</b> 跳到预设视角<br>
-      <b>手心侧倾</b> 地轴跟着倾<br>
+      <b>单手拖动</b> 转校区 · 上下调俯仰<br>
+      <b>一只手张开手掌</b> 另一只手捏合缩放<br>
+      <b>比 1/2/3/4</b> 跳全景 / 图书馆 / 体育馆 / 宿舍区<br>
+      <b>手心侧倾</b> 把沙盘歪一下<br>
       <b>两只手</b> 缩放 + 旋转<br>
       <b>手离开画面</b> 冻结
     </div>
@@ -133,7 +133,7 @@
   <main id="globe-panel">
     <div id="globe"></div>
     <div id="tip"></div>
-    <div id="hud">手势地球 · <strong id="hud-city">鼠标拖动可旋转</strong></div>
+<div id="hud">手势校园 · <strong id="hud-city">鼠标拖动可旋转，悬停建筑看名称</strong></div>
   </main>
 </div>
 
@@ -204,8 +204,10 @@ const VIS = {
 
 // 手势参数。手感不好就改这里，别去改算法。
 const GESTURE = {
-  ALT_MIN: 0.6, ALT_MAX: 3.0,
-  PITCH_LIMIT: 80,           // 度
+  // 校区场景里 altitude 是相对校区跨度（约 1457 米）的倍数。
+  ALT_MIN: 0.12,             // 约 175 米，贴近看一栋楼
+  ALT_MAX: 2.2,              // 约 3200 米，整个校区加周边
+  PITCH_LIMIT: 84,           // 度
   // 增益单位是"每移动一个手掌宽度转多少度"。手掌宽度约是画面宽的 1/6，
   // 所以 60 意味着手掌横扫半个画面约转 200 度。
   YAW_GAIN: 60,
@@ -245,26 +247,17 @@ const GESTURE = {
 };
 
 // 四个预设视角，对应比 1/2/3/4 根手指
+// 四个跳转机位。tx/tz 是局部平面坐标（单位米，x 向东、z 向北），
+// 数值是从校区数据里那几栋楼的质心算出来的，不是估的。
+// altitude 是相对校区跨度的倍数（跨度约 1457 米）。
 const VIEWS = [
-  { name: 'asia',    label: '亚洲',   yaw: 105, pitch: 25,  altitude: 2.4 },
-  { name: 'europe',  label: '欧洲',   yaw: 15,  pitch: 50,  altitude: 2.4 },
-  { name: 'america', label: '美洲',   yaw: -90, pitch: 30,  altitude: 2.4 },
-  { name: 'oceania', label: '大洋洲', yaw: 145, pitch: -25, altitude: 2.4 }
+  { name: 'overview', label: '全景',   tx: 0,    tz: -20,  yaw: 180, pitch: 62, altitude: 1.05 },
+  { name: 'library',  label: '图书馆', tx: 76,   tz: -13,  yaw: 200, pitch: 20, altitude: 0.15 },
+  { name: 'gym',      label: '体育馆', tx: -109, tz: -633, yaw: 160, pitch: 22, altitude: 0.14 },
+  { name: 'dorm',     label: '宿舍区', tx: -302, tz: -247, yaw: 150, pitch: 18, altitude: 0.19 }
 ];
 
-const CITIES = [
-  ['北京', 39.9042, 116.4074], ['上海', 31.2304, 121.4737], ['香港', 22.3193, 114.1694],
-  ['东京', 35.6762, 139.6503], ['首尔', 37.5665, 126.9780], ['新加坡', 1.3521, 103.8198],
-  ['曼谷', 13.7563, 100.5018], ['孟买', 19.0760, 72.8777], ['迪拜', 25.2048, 55.2708],
-  ['伊斯坦布尔', 41.0082, 28.9784], ['莫斯科', 55.7558, 37.6173], ['开罗', 30.0444, 31.2357],
-  ['内罗毕', -1.2921, 36.8219], ['开普敦', -33.9249, 18.4241], ['伦敦', 51.5074, -0.1278],
-  ['巴黎', 48.8566, 2.3522], ['柏林', 52.5200, 13.4050], ['马德里', 40.4168, -3.7038],
-  ['罗马', 41.9028, 12.4964], ['阿姆斯特丹', 52.3676, 4.9041], ['纽约', 40.7128, -74.0060],
-  ['洛杉矶', 34.0522, -118.2437], ['芝加哥', 41.8781, -87.6298], ['多伦多', 43.6532, -79.3832],
-  ['墨西哥城', 19.4326, -99.1332], ['圣保罗', -23.5505, -46.6333],
-  ['布宜诺斯艾利斯', -34.6037, -58.3816], ['利马', -12.0464, -77.0428],
-  ['悉尼', -33.8688, 151.2093], ['奥克兰', -36.8485, 174.7633]
-];
+// 城市列表已经不需要了：场景从地球换成了校区，建筑名来自 campus/campus.json
 
 // 手部关键点索引（MediaPipe 21 点）
 const HAND = {
@@ -424,6 +417,8 @@ function createGestureEngine(C, view) {
     view.yaw = VIEWS[0].yaw;
     view.pitch = VIEWS[0].pitch;
     view.altitude = VIEWS[0].altitude;
+    view.tx = VIEWS[0].tx;
+    view.tz = VIEWS[0].tz;
     view.tiltZ = 0;
     prevRef = null; prevScale = 0; lastHandCount = -1;
     flick.length = 0; coasting = null;
@@ -511,6 +506,8 @@ function createGestureEngine(C, view) {
         view.yaw = lerp(flying.from.yaw, flying.to.yaw, e);
         view.pitch = lerp(flying.from.pitch, flying.to.pitch, e);
         view.altitude = lerp(flying.from.altitude, flying.to.altitude, e);
+        view.tx = lerp(flying.from.tx, flying.to.tx, e);
+        view.tz = lerp(flying.from.tz, flying.to.tz, e);
         if (k >= 1) flying = null;
         prevRef = ref; prevScale = scale;
         mode = 'jumping';
@@ -690,7 +687,11 @@ function createGestureEngine(C, view) {
         if (nowMs - jumpSince >= C.JUMP_HOLD * 1000) {
           const v = VIEWS[fs.extended - 1];
           flying = {
-            from: { yaw: view.yaw, pitch: view.pitch, altitude: view.altitude },
+            from: {
+              yaw: view.yaw, pitch: view.pitch, altitude: view.altitude,
+              tx: (typeof view.tx === 'number') ? view.tx : 0,
+              tz: (typeof view.tz === 'number') ? view.tz : 0
+            },
             to: v, t: 0, dur: C.FLY_SECONDS
           };
           jumpedTo = v.name;
@@ -792,7 +793,7 @@ function setStatus(state, label, sub) {
   $statusSub.textContent = sub;
 }
 
-/* ============================== 场景 ====================================== */
+/* ============================== 校园场景 ================================== */
 
 async function loadThree(onStage) {
   let lastErr = null;
@@ -805,238 +806,208 @@ async function loadThree(onStage) {
   throw lastErr || new Error('three.js 加载失败');
 }
 
-/** 球面坐标 → 单位向量。经度 0 指向 +Z。 */
-function sph(THREE, latDeg, lonDeg, r = 1) {
-  const la = latDeg * Math.PI / 180, lo = lonDeg * Math.PI / 180;
-  return new THREE.Vector3(
-    r * Math.cos(la) * Math.sin(lo),
-    r * Math.sin(la),
-    r * Math.cos(la) * Math.cos(lo)
-  );
-}
+// 视觉参数。全部集中在这里，方便调。
+const CAMPUS = {
+  DATA_URL: './campus/campus.json',
+  HEIGHTS_URL: './campus/heights.json',
+  // OSM 上没写高度的建筑，bake 时按这个默认值填的。加载时用同样的数字
+  // 反推出"哪些高度是估的"，好在界面上提示用户优先核对。
+  ESTIMATED_HEIGHT: 12.0,
+  PITCH_MIN: 5,              // 度。接近平视，能看到楼的高度
+  PITCH_MAX: 88,             // 度。接近正俯视，看校区布局
+  COLOR_BUILDING: 0xb9cbe8,
+  COLOR_BUILDING_TALL: 0x9fd0ff,
+  COLOR_EDGE: 0x3f6ea8,
+  COLOR_ROAD: 0x5f7fb0,
+  COLOR_GROUND: 0x151d2c,
+  COLOR_GREEN: 0x1d3a2c,
+  COLOR_PITCH: 0x24513c,
+  HIGHLIGHT: 0xffd166
+};
 
 /**
- * 陆地点云。
+ * 读取烘好的校园数据，并把高度覆盖表套上去。
  *
- * 必须用斐波那契球面采样，不要按经纬度铺格子——经纬格子在两极会退化成
- * 同心波纹，看起来像渲染 bug。（上一版就是这么踩的。）
+ * 覆盖表放在前端应用而不是烘进数据里：这样改一个数字、刷新页面就生效，
+ * 不需要重跑构建脚本，也不需要重新拉 OSM。
  */
-async function landGeometry(THREE) {
-  const loader = new THREE.TextureLoader();
-  loader.setCrossOrigin('anonymous');
-  const tex = await loader.loadAsync(EARTH_TEXTURE_URL);
-  const src = tex.image;
+async function loadCampusData() {
+  const res = await fetch(CAMPUS.DATA_URL, { cache: 'no-cache' });
+  if (!res.ok) throw new Error('校园数据加载失败：HTTP ' + res.status);
+  const data = await res.json();
 
-  const W = 1440, H = 720;
-  const cv = document.createElement('canvas');
-  cv.width = W; cv.height = H;
-  const ctx = cv.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(src, 0, 0, W, H);
-  const px = ctx.getImageData(0, 0, W, H).data;
+  let overrides = {};
+  try {
+    const r = await fetch(CAMPUS.HEIGHTS_URL, { cache: 'no-cache' });
+    if (r.ok) overrides = (await r.json()).overrides || {};
+  } catch (_) { /* 覆盖表是可选的 */ }
 
-  const pos = [];
-  const golden = Math.PI * (3 - Math.sqrt(5));
-  const count = VIS.LAND_SAMPLES;
-  for (let i = 0; i < count; i++) {
-    const yy = 1 - (i / (count - 1)) * 2;
-    const rad = Math.sqrt(Math.max(0, 1 - yy * yy));
-    const th = golden * i;
-    const xx = rad * Math.cos(th);
-    const zz = rad * Math.sin(th);
-    const lat = Math.asin(yy) * 180 / Math.PI;
-    const lon = Math.atan2(xx, zz) * 180 / Math.PI;
-    const cx = Math.min(W - 1, Math.max(0, Math.floor((lon + 180) / 360 * W)));
-    const cy = Math.min(H - 1, Math.max(0, Math.floor((90 - lat) / 180 * H)));
-    const k = (cy * W + cx) * 4;
-    if (px[k + 2] - px[k] > 20 && px[k + 2] - px[k + 1] > 12) continue;   // 海洋
-    pos.push(xx * VIS.LAND_RADIUS, yy * VIS.LAND_RADIUS, zz * VIS.LAND_RADIUS);
-  }
-
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  return g;
-}
-
-function makeStars(THREE) {
-  const pos = new Float32Array(VIS.STAR_COUNT * 3);
-  for (let i = 0; i < VIS.STAR_COUNT; i++) {
-    const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
-    const r = Math.sqrt(Math.max(0, 1 - u * u));
-    pos[i * 3] = r * Math.cos(th) * VIS.STAR_RADIUS;
-    pos[i * 3 + 1] = u * VIS.STAR_RADIUS;
-    pos[i * 3 + 2] = r * Math.sin(th) * VIS.STAR_RADIUS;
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  return new THREE.Points(g, new THREE.PointsMaterial({
-    color: 0xbdd2ff, size: VIS.STAR_SIZE, sizeAttenuation: true,
-    transparent: true, opacity: 0.85, depthWrite: false
-  }));
-}
-
-function makeGraticules(THREE, color, step, opacity, radius) {
-  const verts = [];
-  const push = (a, b) => { verts.push(a.x, a.y, a.z, b.x, b.y, b.z); };
-  for (let lon = -180; lon < 180; lon += step) {
-    for (let lat = -90; lat < 90; lat += 4) push(sph(THREE, lat, lon, radius), sph(THREE, lat + 4, lon, radius));
-  }
-  for (let lat = -75; lat <= 75; lat += step) {
-    for (let lon = -180; lon < 180; lon += 4) push(sph(THREE, lat, lon, radius), sph(THREE, lat, lon + 4, radius));
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({
-    color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false
-  }));
-}
-
-/** 菲涅尔壳：只在球的边缘发光，用来给玻璃球一个轮廓。 */
-function makeFresnel(THREE, color, power, strength, scale) {
-  const mat = new THREE.ShaderMaterial({
-    uniforms: {
-      uColor: { value: new THREE.Color(color) },
-      uPower: { value: power },
-      uStrength: { value: strength }
-    },
-    vertexShader: `
-      varying vec3 vN; varying vec3 vP;
-      void main() {
-        vN = normalize(normalMatrix * normal);
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        vP = mv.xyz;
-        gl_Position = projectionMatrix * mv;
-      }`,
-    fragmentShader: `
-      uniform vec3 uColor; uniform float uPower; uniform float uStrength;
-      varying vec3 vN; varying vec3 vP;
-      void main() {
-        float f = pow(1.0 - abs(dot(normalize(vN), normalize(-vP))), uPower);
-        gl_FragColor = vec4(uColor, 1.0) * f * uStrength;
-      }`,
-    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+  let estimated = 0;
+  data.buildings.forEach((b, i) => {
+    const byName = b.n ? overrides[b.n] : undefined;
+    const byIndex = overrides['#' + i];
+    if (typeof byName === 'number') { b.h = byName; b.ov = true; }
+    else if (typeof byIndex === 'number') { b.h = byIndex; b.ov = true; }
+    else if (Math.abs(b.h - CAMPUS.ESTIMATED_HEIGHT) < 0.05) { b.est = true; estimated++; }
   });
-  return new THREE.Mesh(new THREE.SphereGeometry(scale, VIS.RIM_SEG[0], VIS.RIM_SEG[1]), mat);
-}
-
-function makeRings(THREE) {
-  const group = new THREE.Group();
-  for (const [tilt, radius, opacity] of VIS.RINGS) {
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(radius, 0.0035, VIS.RING_SEG[0], VIS.RING_SEG[1]),
-      new THREE.MeshBasicMaterial({
-        color: 0x7feaff, transparent: true, opacity,
-        blending: THREE.AdditiveBlending, depthWrite: false
-      })
-    );
-    ring.rotation.set(Math.PI / 2 + tilt, 0, tilt * 1.4);
-    group.add(ring);
-  }
-  return group;
-}
-
-/** 城市金色光点。辉光精灵是程序生成的径向渐变，不需要图片。 */
-function makeCities(THREE) {
-  const sprite = (() => {
-    const c = document.createElement('canvas');
-    c.width = c.height = 64;
-    const g = c.getContext('2d');
-    const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-    grd.addColorStop(0.00, 'rgba(255,255,255,1)');
-    grd.addColorStop(0.12, 'rgba(255,246,225,1)');
-    grd.addColorStop(0.30, 'rgba(255,214,120,.55)');
-    grd.addColorStop(0.55, 'rgba(255,190,90,.12)');
-    grd.addColorStop(1.00, 'rgba(255,180,60,0)');
-    g.fillStyle = grd;
-    g.fillRect(0, 0, 64, 64);
-    const t = new THREE.CanvasTexture(c);
-    t.needsUpdate = true;
-    return t;
-  })();
-
-  const pos = [];
-  const world = [];
-  for (const [name, lat, lon] of CITIES) {
-    const v = sph(THREE, lat, lon, VIS.CITY_RADIUS);
-    pos.push(v.x, v.y, v.z);
-    world.push({ name, pos: v });
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  const points = new THREE.Points(g, new THREE.PointsMaterial({
-    size: VIS.CITY_SIZE, map: sprite, transparent: true, depthWrite: false,
-    blending: THREE.AdditiveBlending, color: 0xffffff, alphaTest: 0.01
-  }));
-  return { points, world };
+  data.stats = {
+    buildings: data.buildings.length,
+    named: data.buildings.filter((b) => b.n).length,
+    estimated,
+    roads: data.roads.length,
+    greens: data.greens.length
+  };
+  return data;
 }
 
 async function createScene(container, onStage) {
   const THREE = await loadThree(onStage);
+  const data = await loadCampusData();
 
-  const renderer = new THREE.WebGLRenderer({
-    antialias: true, alpha: false, powerPreference: 'high-performance'
-  });
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, VIS.DPR_LIMIT));
-  renderer.setClearColor(0x04060c, 1);
+  renderer.setClearColor(0x0a0e16, 1);
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 400);
-  const globeGroup = new THREE.Group();
-  scene.add(globeGroup);
+  const camera = new THREE.PerspectiveCamera(45, 1, 1, 40000);
 
-  const stars = makeStars(THREE);
-  scene.add(stars);
+  scene.add(new THREE.AmbientLight(0x8fb4ff, 1.25));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.45);
+  sun.position.set(-0.5, 1, 0.6).multiplyScalar(1000);
+  scene.add(sun);
 
-  const landGeo = await landGeometry(THREE);
-  globeGroup.add(new THREE.Points(landGeo, new THREE.PointsMaterial({
-    color: VIS.LAND_COLOR, size: VIS.LAND_SIZE, sizeAttenuation: true,
-    transparent: true, opacity: 1, depthWrite: false
-  })));
+  // ---- 量范围，决定相机远近 ----
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  const grow = (ring) => {
+    for (const p of ring) {
+      if (p[0] < minX) minX = p[0];
+      if (p[0] > maxX) maxX = p[0];
+      if (p[1] < minZ) minZ = p[1];
+      if (p[1] > maxZ) maxZ = p[1];
+    }
+  };
+  data.buildings.forEach((b) => grow(b.o));
+  const cx = (minX + maxX) / 2;
+  const cz = (minZ + maxZ) / 2;
+  const span = Math.max(maxX - minX, maxZ - minZ);
+  // 包住整个校区所需的相机距离。校区是窄长形，横屏和竖屏需要的距离差别很大，
+  // 所以按视场的较小那个半角算，并在 resize 时重算——否则换个窗口尺寸就被裁掉一半。
+  const campusRadius = Math.hypot(maxX - minX, maxZ - minZ) / 2;
+  let fitDist = campusRadius * 2.6;
+  const computeFit = () => {
+    const vHalf = camera.fov * Math.PI / 360;
+    const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+    fitDist = campusRadius / Math.sin(Math.min(vHalf, hHalf));
+  };
 
-  // 玻璃壳：只是极淡一层膜
-  globeGroup.add(new THREE.Mesh(
-    new THREE.SphereGeometry(VIS.SHELL_RADIUS, VIS.SHELL_SEG[0], VIS.SHELL_SEG[1]),
-    new THREE.MeshBasicMaterial({
-      color: 0x2ad4ff, transparent: true, opacity: VIS.SHELL_OPACITY, depthWrite: false
-    })
-  ));
+  const group = new THREE.Group();
+  scene.add(group);
 
-  globeGroup.add(makeGraticules(THREE, VIS.GRID_COLOR, VIS.GRID_STEP, VIS.GRID_OPACITY, 1.003));
+  // ---- 建筑。XY 平面上的多边形挤出后绕 X 轴立起来：形状的 y 变成 -z（北向），
+  //      挤出方向变成 +y（高度）。----
+  const pickables = [];
+  const matNormal = new THREE.MeshLambertMaterial({ color: CAMPUS.COLOR_BUILDING });
+  const matTall = new THREE.MeshLambertMaterial({ color: CAMPUS.COLOR_BUILDING_TALL });
+  const edgeMat = new THREE.LineBasicMaterial({ color: CAMPUS.COLOR_EDGE, transparent: true, opacity: 0.55 });
 
-  const cities = makeCities(THREE);
-  globeGroup.add(cities.points);
+  let tallest = { h: 0, n: '' };
+  data.buildings.forEach((b, idx) => {
+    const shape = new THREE.Shape();
+    b.o.forEach(([x, z], i) => (i ? shape.lineTo(x, z) : shape.moveTo(x, z)));
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: b.h, bevelEnabled: false });
+    geo.rotateX(-Math.PI / 2);
+    const mat = (b.h >= 20 ? matTall : matNormal).clone();
+    mat.color = mat.color.clone();
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.userData = { kind: 'building', idx, name: b.n || ('建筑 #' + idx), h: b.h, est: !!b.est };
+    group.add(mesh);
+    pickables.push(mesh);
+    const eg = new THREE.EdgesGeometry(geo, 25);
+    group.add(new THREE.LineSegments(eg, edgeMat));
+    if (b.h > tallest.h) tallest = { h: b.h, n: b.n };
+  });
 
-  scene.add(makeFresnel(THREE, VIS.RIM_COLOR, VIS.RIM_POWER, VIS.RIM_STRENGTH, VIS.RIM_SCALE));
-  scene.add(makeRings(THREE));
+  // ---- 道路 ----
+  const roadVerts = [];
+  for (const r of data.roads) {
+    for (let i = 0; i < r.o.length - 1; i++) {
+      roadVerts.push(r.o[i][0], 1.5, r.o[i][1], r.o[i + 1][0], 1.5, r.o[i + 1][1]);
+    }
+  }
+  if (roadVerts.length) {
+    const rg = new THREE.BufferGeometry();
+    rg.setAttribute('position', new THREE.Float32BufferAttribute(roadVerts, 3));
+    group.add(new THREE.LineSegments(rg, new THREE.LineBasicMaterial({
+      color: CAMPUS.COLOR_ROAD, transparent: true, opacity: 0.8
+    })));
+  }
+
+  // ---- 绿地与球场 ----
+  for (const g of data.greens) {
+    const shape = new THREE.Shape();
+    g.o.forEach(([x, z], i) => (i ? shape.lineTo(x, z) : shape.moveTo(x, z)));
+    const geo = new THREE.ShapeGeometry(shape);
+    geo.rotateX(Math.PI / 2);
+    geo.translate(0, 0.4, 0);
+    group.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      color: g.k === 'pitch' ? CAMPUS.COLOR_PITCH : CAMPUS.COLOR_GREEN,
+      side: THREE.DoubleSide, transparent: true, opacity: 0.95
+    })));
+  }
+
+  // ---- 地面用校园多边形本身，轮廓一出来就有"这是个校园"的感觉 ----
+  if (data.campus) {
+    const shape = new THREE.Shape();
+    data.campus.forEach(([x, z], i) => (i ? shape.lineTo(x, z) : shape.moveTo(x, z)));
+    const geo = new THREE.ShapeGeometry(shape);
+    geo.rotateX(Math.PI / 2);
+    geo.translate(0, 0.1, 0);
+    group.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      color: CAMPUS.COLOR_GROUND, side: THREE.DoubleSide
+    })));
+
+    const ring = data.campus.map(([x, z]) => new THREE.Vector3(x, 1, -z));
+    ring.push(ring[0].clone());
+    group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ring),
+      new THREE.LineBasicMaterial({ color: CAMPUS.COLOR_EDGE, transparent: true, opacity: 0.9 })));
+  }
 
   function resize() {
     const w = container.clientWidth || 1;
     const h = container.clientHeight || 1;
-    // 第三参数必须是 true（默认值）。传 false 表示"别动 canvas 的 CSS 尺寸"，
-    // 那样在 2 倍屏（iPad）上 canvas 会按设备像素尺寸显示，比容器大一倍，
-    // 用户只能看到左上角四分之一。桌面是 1 倍屏，所以截图里看不出这个问题。
+    // 第三参数必须是 true。传 false 表示"别动 canvas 的 CSS 尺寸"，
+    // 那样在 2 倍屏上 canvas 会按设备像素显示，比容器大一倍，只能看到四分之一。
     renderer.setSize(w, h, true);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    computeFit();
   }
   resize();
   window.addEventListener('resize', resize);
   window.addEventListener('orientationchange', () => setTimeout(resize, 250));
 
-  /** 把视角状态套到相机和地球组上。这是渲染层唯一的入口。 */
+  const camDir = new THREE.Vector3();
+  const camUp = new THREE.Vector3();
+
+  /** 把视角状态套到相机上。渲染层唯一的入口。 */
   function apply(s) {
-    const r = 1 + s.altitude;
-    const lat = s.pitch * Math.PI / 180;
-    const lon = s.yaw * Math.PI / 180;
+    // 看哪里由 tx/tz 决定：全景看校区中心，机位看具体那栋楼
+    const tx = (typeof s.tx === 'number') ? s.tx : cx;
+    const tz = (typeof s.tz === 'number') ? s.tz : cz;
+    const r = fitDist * s.altitude;
+    const yawRad = s.yaw * Math.PI / 180;
+    const pitchRad = clamp(s.pitch, CAMPUS.PITCH_MIN, CAMPUS.PITCH_MAX) * Math.PI / 180;
     camera.position.set(
-      r * Math.cos(lat) * Math.sin(lon),
-      r * Math.sin(lat),
-      r * Math.cos(lat) * Math.cos(lon)
+      tx + r * Math.cos(pitchRad) * Math.sin(yawRad),
+      r * Math.sin(pitchRad),
+      tz + r * Math.cos(pitchRad) * Math.cos(yawRad)
     );
-    camera.lookAt(0, 0, 0);
-    // 地轴倾斜作用在世界空间，和经纬度解耦
-    globeGroup.rotation.z = (s.tiltZ || 0) * Math.PI / 180;
-    globeGroup.updateMatrixWorld();
+    // 掌心倾斜在这个场景里是"把沙盘歪一下"，绕视线轴滚转相机
+    camDir.set(tx, 0, tz).sub(camera.position).normalize();
+    camUp.set(0, 1, 0).applyAxisAngle(camDir, (s.tiltZ || 0) * Math.PI / 180);
+    camera.up.copy(camUp);
+    camera.lookAt(tx, 0, tz);
   }
 
   function render() { renderer.render(scene, camera); }
@@ -1044,36 +1015,43 @@ async function createScene(container, onStage) {
   function stats() {
     const info = renderer.info.render;
     return {
-      landPoints: landGeo.attributes.position.count,
-      cityPoints: cities.points.geometry.attributes.position.count,
-      starPoints: stars.geometry.attributes.position.count,
+      buildings: data.stats.buildings,
+      named: data.stats.named,
+      estimatedHeights: data.stats.estimated,
+      roads: data.stats.roads,
+      greens: data.stats.greens,
       drawCalls: info.calls,
       triangles: info.triangles
     };
   }
 
-  /** 鼠标悬停找最近的城市。用屏幕距离判断，比射线求交简单且够用。 */
-  const tmp = new THREE.Vector3();
-  function pickCity(clientX, clientY) {
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+
+  /** 鼠标悬停找建筑 */
+  function pickBuilding(clientX, clientY) {
     const rect = renderer.domElement.getBoundingClientRect();
-    const mx = clientX - rect.left, my = clientY - rect.top;
-    let best = null, bestD = 24;
-    for (const c of cities.world) {
-      // 背面的点不参与
-      tmp.copy(c.pos).applyMatrix4(globeGroup.matrixWorld);
-      const toCam = camera.position.clone().sub(tmp).normalize();
-      if (tmp.clone().normalize().dot(toCam) < 0.15) continue;
-      tmp.project(camera);
-      const sx = (tmp.x * 0.5 + 0.5) * rect.width;
-      const sy = (-tmp.y * 0.5 + 0.5) * rect.height;
-      const d = Math.hypot(sx - mx, sy - my);
-      if (d < bestD) { bestD = d; best = { name: c.name, x: sx, y: sy }; }
-    }
-    return best;
+    pointer.set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1
+    );
+    raycaster.setFromCamera(pointer, camera);
+    const hits = raycaster.intersectObjects(pickables, false);
+    return hits.length ? hits[0].object.userData : null;
   }
 
-  return { THREE, apply, render, resize, stats, pickCity, camera, globeGroup, renderer, dispose() { renderer.dispose(); } };
+  window.__campusInfo = {
+    name: data.name, span: Math.round(span), tallest,
+    stats: data.stats, origin: data.origin
+  };
+
+  return {
+    THREE, apply, render, resize, stats, pickBuilding,
+    camera, renderer, group, data, center: { x: cx, z: cz }, span,
+    dispose() { renderer.dispose(); }
+  };
 }
+
 
 /* ============================== 模型加载 ================================== */
 
@@ -1214,7 +1192,10 @@ async function createLandmarker(modelBuf) {
 let scene = null;
 let landmarker = null;
 let running = false;
-const view = { yaw: VIEWS[0].yaw, pitch: VIEWS[0].pitch, altitude: VIEWS[0].altitude, tiltZ: 0 };
+const view = {
+  yaw: VIEWS[0].yaw, pitch: VIEWS[0].pitch, altitude: VIEWS[0].altitude,
+  tx: VIEWS[0].tx, tz: VIEWS[0].tz, tiltZ: 0
+};
 const engine = createGestureEngine(GESTURE, view);
 let mouseHoldUntil = 0;
 
@@ -1327,11 +1308,14 @@ function bindMouse(canvas) {
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener('pointermove', (e) => {
-    const hit = scene.pickCity(e.clientX, e.clientY);
+    const hit = scene.pickBuilding(e.clientX, e.clientY);
     if (hit) {
-      $tip.textContent = hit.name;
-      $tip.style.left = hit.x + 'px';
-      $tip.style.top = hit.y + 'px';
+      // 高度是估算的就在提示里标出来，方便现场核对
+      $tip.textContent = hit.name + ' · ' + hit.h + ' 米' + (hit.est ? '（估算）' : '');
+      // tip 是定位在 #globe-panel 里的，所以要减掉面板相对视口的偏移
+      const prect = document.getElementById('globe-panel').getBoundingClientRect();
+      $tip.style.left = (e.clientX - prect.left) + 'px';
+      $tip.style.top = (e.clientY - prect.top) + 'px';
       $tip.style.opacity = '1';
     } else {
       $tip.style.opacity = '0';

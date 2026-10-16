@@ -11,13 +11,14 @@ const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 
 // 期望区间，来自设计文档 6.2
 const EXPECT = {
-  landPoints: [10000, 16000],
-  cityPoints: [30, 30],
-  starPoints: [1500, 2200],
-  drawCalls: [1, 12],
+  buildings: [50, 80],
+  named: [25, 45],
+  roads: [200, 500],
+  greens: [10, 80],
+  drawCalls: [1, 400],
   // 三角形数是防回归的上限，不是性能目标——真正的开销在透明层的填充率上，
   // 那个由任务 9 的帧时长脚本负责看。
-  triangles: [0, 20000]
+  triangles: [0, 30000]
 };
 
 (async () => {

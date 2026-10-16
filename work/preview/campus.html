@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0a0e16; color: #dfe8ff; overflow: hidden;
+    font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  #host { position: absolute; inset: 0; }
+  #hud { position: absolute; left: 16px; top: 14px; font-size: 13px; color: #8ea3c8; line-height: 1.7; }
+  #hud b { color: #d8e6ff; font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="host"></div>
+<div id="hud"></div>
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+
+const DATA_URL = '/work/campus/campus.json';
+
+const host = document.getElementById('host');
+const hud = document.getElementById('hud');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x0a0e16, 1);
+host.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.5, 20000);
+
+scene.add(new THREE.AmbientLight(0x8fb4ff, 1.15));
+const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+sun.position.set(-300, 900, 500);
+scene.add(sun);
+
+// 加时间戳绕开浏览器缓存。开发期反复改数据，被缓存住会误以为改动没生效。
+const data = await (await fetch(DATA_URL + '?t=' + Date.now())).json();
+
+// ---- 量一下范围，好把相机放对 ----
+let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+const grow = (ring) => {
+  for (const [x, z] of ring) {
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+};
+data.buildings.forEach((b) => grow(b.o));
+const cx = (minX + maxX) / 2, cz = (minZ + maxZ) / 2;
+const spanX = maxX - minX, spanZ = maxZ - minZ;
+const span = Math.max(spanX, spanZ);
+
+// 建筑里 XY 平面上的形状从多边形挤出。绕 X 轴 -90 度立起来：
+// 形状的 y 变成 -z（北向），挤出方向变成 +y（高度）。
+function extrudeRing(ring, height, material) {
+  const shape = new THREE.Shape();
+  ring.forEach(([x, z], i) => (i ? shape.lineTo(x, z) : shape.moveTo(x, z)));
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
+  geo.rotateX(-Math.PI / 2);
+  return new THREE.Mesh(geo, material);
+}
+
+const buildingMat = new THREE.MeshLambertMaterial({ color: 0xb9cbe8 });
+const buildingTall = new THREE.MeshLambertMaterial({ color: 0x9fd0ff });
+const edgeMat = new THREE.LineBasicMaterial({ color: 0x4a7fb5, transparent: true, opacity: 0.5 });
+
+const group = new THREE.Group();
+scene.add(group);
+
+let tallest = { h: 0, n: '' };
+for (const b of data.buildings) {
+  const mat = b.h >= 20 ? buildingTall : buildingMat;
+  const mesh = extrudeRing(b.o, b.h, mat);
+  group.add(mesh);
+  // 描边让体块轮廓清楚
+  const eg = new THREE.EdgesGeometry(mesh.geometry, 25);
+  group.add(new THREE.LineSegments(eg, edgeMat));
+  if (b.h > tallest.h) tallest = { h: b.h, n: b.n };
+}
+
+// 道路
+const roadVerts = [];
+for (const r of data.roads) {
+  for (let i = 0; i < r.o.length - 1; i++) {
+    roadVerts.push(r.o[i][0], 1.5, r.o[i][1], r.o[i + 1][0], 1.5, r.o[i + 1][1]);
+  }
+}
+const roadGeo = new THREE.BufferGeometry();
+roadGeo.setAttribute('position', new THREE.Float32BufferAttribute(roadVerts, 3));
+group.add(new THREE.LineSegments(roadGeo, new THREE.LineBasicMaterial({ color: 0x5f7fb0, transparent: true, opacity: 0.75 })));
+
+// 绿地
+const greenMat = new THREE.MeshBasicMaterial({ color: 0x1d3a2c, transparent: true, opacity: 0.9, side: THREE.DoubleSide });
+for (const g of data.greens) {
+  const shape = new THREE.Shape();
+  g.o.forEach(([x, z], i) => (i ? shape.lineTo(x, z) : shape.moveTo(x, z)));
+  const geo = new THREE.ShapeGeometry(shape);
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, 0.3, 0);
+  group.add(new THREE.Mesh(geo, greenMat));
+}
+
+// 地面用校园多边形本身，不用矩形——轮廓一出来就有"这是个校园"的感觉
+if (data.campus) {
+  const shape = new THREE.Shape();
+  data.campus.forEach(([x, z], i) => (i ? shape.lineTo(x, z) : shape.moveTo(x, z)));
+  const geo = new THREE.ShapeGeometry(shape);
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, 0.1, 0);
+  group.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x151d2c, side: THREE.DoubleSide })));
+
+  const outline = data.campus.map(([x, z]) => new THREE.Vector3(x, 1, -z));
+  outline.push(outline[0].clone());
+  group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(outline),
+    new THREE.LineBasicMaterial({ color: 0x3f6ea8 })));
+}
+
+// 相机：从南侧斜上方看
+const dist = span * 0.95;
+camera.position.set(cx, dist * 0.72, cz + dist * 0.85);
+camera.lookAt(cx, 0, cz);
+
+hud.innerHTML =
+  '<b>' + data.name + '</b><br>' +
+  '楼 ' + data.buildings.length + ' 栋（带名字 ' + data.buildings.filter((b) => b.n).length + '）<br>' +
+  '道路 ' + data.roads.length + ' 段 · 绿地 ' + data.greens.length + ' 块<br>' +
+  '占地 ' + Math.round(spanX) + ' × ' + Math.round(spanZ) + ' 米<br>' +
+  '最高建筑 ' + tallest.h + ' 米' + (tallest.n ? '（' + tallest.n + '）' : '');
+
+renderer.render(scene, camera);
+document.title = 'ready:' + data.buildings.length;
+</script>
+</body>
+</html>

@@ -35,9 +35,12 @@ const server = http.createServer((req, res) => {
     // HTML 不缓存（改完刷新就能看到），其余资源长缓存——
     // 模型 7.8MB，每次刷新都重下的话迭代根本没法进行。
     const ext = path.extname(target).toLowerCase();
+    // 只给体积大、几乎不变的文件长缓存。数据文件（json）必须每次校验，
+    // 否则改完看不出来，会以为改动没生效。
+    const longCache = ext === ".task" || ext === ".jpg" || ext === ".jpeg" || ext === ".png" || ext === ".bin";
     res.writeHead(200, {
       "Content-Type": TYPES[ext] || "application/octet-stream",
-      "Cache-Control": ext === ".html" ? "no-store" : "public, max-age=86400"
+      "Cache-Control": longCache ? "public, max-age=86400" : "no-store"
     });
     res.end(data);
   });
