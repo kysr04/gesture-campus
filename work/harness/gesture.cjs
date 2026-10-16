@@ -397,6 +397,44 @@ const CASES = [
       return [stillFrozen && afterReturn < 0.5,
               "冻结漂移 " + stillFrozen + "，回来首帧跳 " + afterReturn.toFixed(2) + " 度"];
     `
+  },
+  {
+    name: "T8 一只手拿出去再放回来（顺序还反转），视角不跳",
+    body: `
+      const a = P.open, b = shift(P.open, 0.35, 0);
+      g.reset();
+      for (let i = 0; i < 8; i++) g.step([a, b], 1/30);
+      const y0 = g.state().yaw;
+      for (let i = 0; i < 8; i++) g.step([a], 1/30);            // 拿走一只手
+      let maxDev = 0;
+      for (let i = 0; i < 12; i++) {
+        // 故意把新回来的手放在数组第一位，模拟 MediaPipe 手序翻转
+        g.step([shift(P.open, -0.30, 0.10), a], 1/30);
+        maxDev = Math.max(maxDev, Math.abs(g.state().yaw - y0));
+      }
+      return [maxDev < 5, "经度最大偏移 " + maxDev.toFixed(2) + " 度"];
+    `
+  },
+  {
+    name: "T8 退出双手模式再进来，缩放不因滤波残留而漂移",
+    body: `
+      const anchor = P.open;
+      const ctl = (i) => shift(P.pinchSteps[i], 0.30, 0);
+      g.reset();
+      // 第一次会话：用张开的手结束，滤波器会停在张开那一端
+      for (let i = 0; i < 5; i++) g.step([anchor, ctl(10)], 1/30);
+      for (let i = 0; i < 10; i++) g.step([anchor, ctl(0)], 1/30);
+      // 一只手拿出去，退出双手模式
+      for (let i = 0; i < 10; i++) g.step([anchor], 1/30);
+      // 再进来，这次是捏着的
+      let r = null;
+      for (let i = 0; i < 12; i++) r = g.step([anchor, ctl(18)], 1/30);
+      const justIn = g.state().altitude;
+      for (let i = 0; i < 12; i++) r = g.step([anchor, ctl(18)], 1/30);
+      const settled = g.state().altitude;
+      return [Math.abs(settled - justIn) < 0.15,
+              "刚进来 " + justIn.toFixed(2) + "，稳定后 " + settled.toFixed(2)];
+    `
   }
 ];
 

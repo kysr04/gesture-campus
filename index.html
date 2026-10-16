@@ -387,6 +387,7 @@ function createGestureEngine(C, view) {
   let lastNow = 0;
 
   let prevRef = null, prevScale = 0;
+  let lastHandCount = -1;
   let flick = [];
   let coasting = null;
   let lostFrames = 0;
@@ -415,7 +416,7 @@ function createGestureEngine(C, view) {
     view.pitch = VIEWS[0].pitch;
     view.altitude = VIEWS[0].altitude;
     view.tiltZ = 0;
-    prevRef = null; prevScale = 0;
+    prevRef = null; prevScale = 0; lastHandCount = -1;
     flick.length = 0; coasting = null;
     lostFrames = 0; awaitingReacquire = false; gainRamp = 1;
     zoomActive = false; zoomFrames = 0; zoomIdleFrames = 0; anchorPrev = null;
@@ -440,17 +441,46 @@ function createGestureEngine(C, view) {
     lastNow = nowMs;
     jumpedTo = null;
 
+    // 单手逻辑统一用"离上一帧基准最近的那只手"。MediaPipe 返回的手序不保证稳定，
+    // 直接用 hands[0] 会在手序翻转时把另一只手的位置当成位移，算出一大截假转角——
+    // 表现就是"手拿出去再放回来之后突然特别灵敏"。
+    let primaryIdx = 0;
+    if (hands.length >= 2 && prevRef) {
+      let best = Infinity;
+      for (let i = 0; i < hands.length; i++) {
+        const r = palmRef(hands[i]).ref;
+        const d = Math.hypot((r.x - prevRef.x) * frameW, (r.y - prevRef.y) * frameH);
+        if (d < best) { best = d; primaryIdx = i; }
+      }
+    }
+
     let ref = null, scale = 0, fs = null, tilt = 0;
     if (hands.length) {
-      const p = palmRef(hands[0]);
+      const p = palmRef(hands[primaryIdx]);
       ref = p.ref; scale = p.scale;
-      fs = fingerState(hands[0]);
-      tilt = palmTilt(hands[0]);
+      fs = fingerState(hands[primaryIdx]);
+      tilt = palmTilt(hands[primaryIdx]);
     }
 
     // 位移一律换算到像素域，再除以手掌尺度的像素值。这样横纵灵敏度一致，
     // 而且把手凑近或拿远摄像头时灵敏度不变。
     let movedPx = 0;
+    // 手数增加时（有手回到画面）清掉基准：那一刻手序最可能翻转。
+    // 手数减少不清，否则会破坏"一只手闪断一帧不掉出双手模式"的容忍度——
+    // 那种情况由双手模式的冻结逻辑负责，不需要在这里处理。
+    // 只在"没处在双手模式"时清。双手模式内部靠锚点邻近判定锁定是哪只手，
+    // 不需要这个基准；在那里清反而会把"一只手闪断一帧"的容忍度打断。
+    if (hands.length > lastHandCount && !twoHandActive) {
+      prevRef = null;
+      twoPrevMid = null;
+      anchorPrev = null;
+      flick.length = 0;
+      coasting = null;
+    }
+    if (hands.length !== lastHandCount) {
+      lastHandCount = hands.length;
+    }
+
     if (ref && prevRef) {
       movedPx = Math.hypot((ref.x - prevRef.x) * frameW, (ref.y - prevRef.y) * frameH);
     }
@@ -508,12 +538,17 @@ function createGestureEngine(C, view) {
       twoHandActive = true;
       zoomBasePinch = null;             // 重新采样缩放基准
       twoPrevMid = null;
+      fZoomPinch.reset();
     }
     if (twoHandActive && singleFrames >= C.TWOHAND_EXIT) {
       twoHandActive = false;
-      zoomBasePinch = null;
       twoPrevMid = null;
       prevRef = null;                   // 回到单手的下一帧重新建立基准，避免跳变
+      // 缩放会话的状态必须一起清掉。只清基准是不够的：滤波器会留着上一轮的
+      // 滞后值，下次进来时基准就取到那个陈旧的值，地球会自己跑一截。
+      zoomActive = false; zoomFrames = 0; zoomIdleFrames = 0;
+      zoomBasePinch = null; anchorPrev = null;
+      fZoomPinch.reset();
     }
 
     if (twoHandActive) {
