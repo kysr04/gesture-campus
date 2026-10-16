@@ -193,6 +193,34 @@ const CASES = [
       return [jumped === null, "误触发 " + jumped];
     `
   },
+  {
+    name: "T5 比数字时手轻微晃动仍然会触发（真手不可能完全静止）",
+    body: `
+      g.reset();
+      let jumped = null;
+      for (let i = 0; i < 40; i++) {
+        // 每帧约 5 像素的抖动：远大于拖拽死区 1.5，但远小于判定静止的 12
+        const j = (i % 2 ? 0.008 : -0.008);
+        const r = g.step([shift(P.count2, j, j * 0.5)], 1/30);
+        if (r.jumpedTo) jumped = r.jumpedTo;
+      }
+      return [jumped === "europe", "jumped=" + jumped];
+    `
+  },
+  {
+    name: "T5 比数字时姿势每四帧抖一帧，计时不清零",
+    body: `
+      g.reset();
+      let jumped = null;
+      for (let i = 0; i < 40; i++) {
+        // 每四帧抖一帧成张开手掌（拇指外展 → 不满足条件）
+        const h = (i % 4 === 3) ? P.open : P.count2;
+        const r = g.step([h], 1/30);
+        if (r.jumpedTo) jumped = r.jumpedTo;
+      }
+      return [jumped === "europe", "jumped=" + jumped];
+    `
+  },
 
   /* ---------------- 任务 6：掌心倾斜 ---------------- */
   {

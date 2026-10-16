@@ -226,7 +226,13 @@ const GESTURE = {
   FLICK_TAU: 0.5,            // 甩动惯性的衰减时间常数，秒
   FLICK_MIN: 12,             // 低于这个角速度就不滑行，直接停
   FLICK_WINDOW: 6,
-  JUMP_HOLD: 0.5,            // 比数字要保持多久才触发
+  JUMP_HOLD: 0.4,            // 比数字要保持多久才触发
+  JUMP_GRACE: 6,             // 比数字时姿势抖几帧不清零计时（真手的手指数会偶尔跳）
+  // 判定"手基本静止"的阈值，作用在短窗口的平均位移上，不是单帧位移。
+  // 单帧阈值分不开这两件事：举着手不动时每帧也抖几像素，而慢慢拖动每帧也就几像素。
+  // 区别在方向——抖动来回摆、均值接近零；拖动持续往一边走、均值稳定。
+  JUMP_STILL_PX: 5,
+  JUMP_STILL_WINDOW: 8,
   JUMP_COOLDOWN: 0.6,
   FLY_SECONDS: 0.8,          // 跳视角的飞行时长
   TILT_LIMIT: 35,            // 地轴倾斜上限，度
@@ -395,6 +401,8 @@ function createGestureEngine(C, view) {
   let gainRamp = 1;
 
   let jumpCount = null, jumpSince = 0, jumpCooldownUntil = 0;
+  let jumpMissFrames = 0;
+  const jumpMoveBuf = [];        // 最近若干帧的位移，用均值区分"举着不动"和"慢慢拖"
   let flying = null;
 
   let twoHandFrames = 0, singleFrames = 0, twoHandActive = false;
@@ -407,6 +415,7 @@ function createGestureEngine(C, view) {
 
   let mode = 'idle';
   let jumpedTo = null;
+  let dbgMovedPx = 0, dbgStill = false, dbgEligible = false, dbgExtended = -1, dbgThumbIn = false, dbgSustained = 0;
 
   function setFrame(w, h) { if (w > 0 && h > 0) { frameW = w; frameH = h; } }
 
@@ -422,6 +431,10 @@ function createGestureEngine(C, view) {
     zoomActive = false; zoomFrames = 0; zoomIdleFrames = 0; anchorPrev = null;
     zoomBasePinch = null; zoomAnchorIsFirst = null;
     jumpCount = null;
+    jumpMissFrames = 0;
+    jumpMoveBuf.length = 0;
+    jumpSince = 0;
+    jumpCooldownUntil = 0;      // 不清的话，reset 之后模拟时钟归零会一直处在冷却期
     flying = null;
     twoHandFrames = 0; singleFrames = 0; twoHandActive = false;
     twoPrevMid = null;
@@ -476,6 +489,7 @@ function createGestureEngine(C, view) {
       anchorPrev = null;
       flick.length = 0;
       coasting = null;
+      jumpMoveBuf.length = 0;
     }
     if (hands.length !== lastHandCount) {
       lastHandCount = hands.length;
@@ -509,6 +523,7 @@ function createGestureEngine(C, view) {
       lostFrames++;
       coasting = null;
       flick.length = 0;
+      jumpMoveBuf.length = 0;
       prevRef = null;
       if (lostFrames >= C.LOST_FRAMES) awaitingReacquire = true;
       mode = 'idle';
@@ -652,10 +667,26 @@ function createGestureEngine(C, view) {
     // ---- 手指计数跳视角 ----
     // 三条同时满足：伸直 1~4 根、拇指内收、手基本静止。
     // 拇指内收这条是关键：摊开手掌时拇指外展，所以拖拽完手停住不会误触发。
+    // "手基本静止"用短窗口的平均位移判断，不是单帧位移。
+    // 举着手不动时每帧也抖几像素，但方向来回摆、均值接近零；
+    // 而慢慢拖动是持续往一个方向走，均值会稳定地大。单帧阈值分不开这两种。
+    if (prevRef) jumpMoveBuf.push((ref.x - prevRef.x) * frameW, (ref.y - prevRef.y) * frameH);
+    else jumpMoveBuf.push(0, 0);
+    while (jumpMoveBuf.length > C.JUMP_STILL_WINDOW * 2) { jumpMoveBuf.shift(); jumpMoveBuf.shift(); }
+    let jmSumX = 0, jmSumY = 0;
+    for (let k = 0; k < jumpMoveBuf.length; k += 2) { jmSumX += jumpMoveBuf[k]; jmSumY += jumpMoveBuf[k + 1]; }
+    const jmN = (jumpMoveBuf.length / 2) || 1;
+    const sustained = Math.hypot(jmSumX / jmN, jmSumY / jmN);
+    const still = sustained <= C.JUMP_STILL_PX;
+    dbgMovedPx = movedPx; dbgStill = still;
+    dbgSustained = sustained;
+    dbgExtended = fs ? fs.extended : -1; dbgThumbIn = fs ? fs.thumbIn : false;
     const eligible = fs.extended >= 1 && fs.extended <= 4 && fs.thumbIn &&
-                     !moving && nowMs >= jumpCooldownUntil;
+                     still && nowMs >= jumpCooldownUntil;
+    dbgEligible = eligible;
     if (eligible) {
       if (jumpCount === fs.extended) {
+        jumpMissFrames = 0;
         if (nowMs - jumpSince >= C.JUMP_HOLD * 1000) {
           const v = VIEWS[fs.extended - 1];
           flying = {
@@ -673,9 +704,12 @@ function createGestureEngine(C, view) {
       } else {
         jumpCount = fs.extended;
         jumpSince = nowMs;
+        jumpMissFrames = 0;
       }
-    } else {
-      jumpCount = null;
+    } else if (jumpCount !== null) {
+      // 姿势抖一两帧不立刻清零计时，否则真手上永远凑不满那半秒
+      jumpMissFrames++;
+      if (jumpMissFrames > C.JUMP_GRACE) { jumpCount = null; jumpMissFrames = 0; }
     }
     const jumpPending = jumpCount !== null;
 
@@ -733,6 +767,8 @@ function createGestureEngine(C, view) {
       zoomActive, zoomBasePinch, zoomBaseAlt, zoomFrames, zoomIdleFrames,
       anchorIsFirst: zoomAnchorIsFirst, twoHandActive, singleFrames,
       pinchFiltered: fZoomPinch.xPrev
+      , dbgMovedPx, dbgStill, dbgEligible, dbgExtended, dbgThumbIn, dbgSustained,
+      jumpCount, jumpMissFrames, jumpSince, jumpCooldownUntil
     })
   };
 }
