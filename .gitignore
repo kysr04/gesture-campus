@@ -19,3 +19,5 @@ __pycache__/
 # 这两份是根目录同名文件的副本，只留一份（根目录那份才是要部署的）
 work/hand_landmarker.task
 work/campus/campus.json
+# 人像原片只在本地留着用于重新抠图，不往公开仓库里传
+assets/portrait-src.jpg

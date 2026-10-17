@@ -53,10 +53,10 @@
     <div id="state"><span id="dot"></span><span id="label">初始化</span></div>
     <div id="hint">
       <b>手掌平移</b> 在粒子中穿行<br>
+      <b>比 1</b> 全场粒子聚成人像<br>
       <b>捏合</b> 把周围的粒子吸进掌心<br>
-      <b>张开</b> 放掉<br>
       <b>两只手</b> 推进 / 后退<br>
-      <b>比 1/2/3/4</b> 跳四个位置
+      <b>手离开画面</b> 人像散开
     </div>
   </aside>
   <main id="stage">
@@ -101,8 +101,8 @@ const CFG = {
   grabWave: 0.45,          // 波前延迟：越远的粒子越晚动，形成向内涌的层次
   pinchOpen: 0.85,         // 指距比高于此值视为张开
   pinchShut: 0.35,         // 低于此值视为捏紧
-  jumpHold: 0.4,           // 比数字保持多久
-  jumpCooldown: 0.8,
+  portraitHoldMs: 480,     // 比 1 停住多久算“叫人像出来”
+  portraitLostMs: 1200,    // 手离开画面多久后人像散开
   stillPx: 5,              // 短窗口平均位移低于此值算静止
   stillWindow: 8,
   lostFrames: 6,
@@ -111,13 +111,13 @@ const CFG = {
   dprLimit: 2
 };
 
-// 四个位置：yaw / pitch / 距离倍数
-const SPOTS = [
-  { name: '正面', yaw: 0,   pitch: 0,  dist: 0.35 },
-  { name: '深入', yaw: 120, pitch: 12, dist: 0.08 },
-  { name: '俯瞰', yaw: 240, pitch: 45, dist: 0.55 },
-  { name: '外围', yaw: 300, pitch: -8, dist: 1.60 }
-];
+// 人像：一张抠好的透明底照片，所有粒子最后都落到它上面
+const PORTRAIT = {
+  url: './assets/portrait.png',
+  height: 7.2,             // 在世界里的高度
+  ahead: 8.6,              // 摆在相机前方多远
+  photoAlpha: 0.80
+};
 
 const TM_URLS = [
   { js: 'https://registry.npmmirror.com/@mediapipe/tasks-vision/1.1.1/files/vision_bundle.mjs',
@@ -147,6 +147,8 @@ const clamp = (v,a,b)=> v<a?a:v>b?b:v;
 const DEBUG_GRAB = new URLSearchParams(location.search).get('grab') === '1';
 // grab=2 直接把抓取状态钉在"完全收拢"，用来截图看最终形态
 const DEBUG_GRAB_HOLD = new URLSearchParams(location.search).get('grab') === '2';
+const DEBUG_PORTRAIT = new URLSearchParams(location.search).get('portrait') === '1';
+const DEBUG_MORPH = parseFloat(new URLSearchParams(location.search).get('morph'));
 const lerp = (a,b,t)=> a+(b-a)*t;
 const wait = ms=> new Promise(r=>setTimeout(r,ms));
 
@@ -189,7 +191,9 @@ const stage = document.getElementById('stage');
 const glCanvas = document.getElementById('gl');
 let THREE = null, renderer = null, scene = null, camera = null;
 let field = null, glow = null;
+let photoMesh = null, photoMat = null;
 let grabMix = 0, grabTarget = 0, grabT = 0;
+let portraitMix = 0, portraitTarget = 0;
 
 async function loadThree(onStage){
   let err = null;
@@ -210,16 +214,27 @@ function fieldMaterial(){
       uGrabR: { value: 26 },                             // 影响半径
       uGrabK: { value: 0 },                              // 强度 0~1
       uGrabT: { value: 0 },                              // 从捏下开始经过的秒数
+      uMorph: { value: 0 },                              // 0=星云 1=人像
+      uPCenter: { value: new THREE.Vector3() },
+      uPRight: { value: new THREE.Vector3(1,0,0) },
+      uPUp: { value: new THREE.Vector3(0,1,0) },
+      uPNormal: { value: new THREE.Vector3(0,0,1) },
+      uPhotoGain: { value: 0.62 },                       // 人像态粒子的不透明度（叠加混合容易过曝）
+      uPlaneFade: { value: 0 },                          // 照片底图淡入到多少（0 时粒子自己发光）
       cA: { value: new THREE.Color(0x9fe8ff) },
       cB: { value: new THREE.Color(0x6f9dff) },
       cC: { value: new THREE.Color(0xd6c4ff) }
     },
     vertexShader: `
       attribute float aSeed; attribute float aTint;
+      attribute vec3 aTarget; attribute vec3 aColor; attribute float aEdge;
       uniform float uTime;
       uniform vec3 uGrab; uniform vec3 uGrabAxis;
       uniform float uGrabR; uniform float uGrabK; uniform float uGrabT;
-      varying float vShade; varying float vTint; varying float vWarm;
+      uniform vec3 uPCenter; uniform vec3 uPRight; uniform vec3 uPUp; uniform vec3 uPNormal;
+      uniform float uMorph;
+      varying float vShade; varying float vTint; varying float vWarm; varying float vPhoto; varying float vEdge;
+      varying vec3 vColor;
 
       vec3 rotAxis(vec3 v, vec3 axis, float ang){
         float c = cos(ang), s = sin(ang);
@@ -237,7 +252,7 @@ function fieldMaterial(){
         // 远近不同的粒子错开起跑，所以能看到"一圈圈被吸进去"的层次；
         // 松开时强度回落，它们顺着原来的方向散回去。
         float grabW = 0.0;
-        if (uGrabK > 0.001) {
+        if (uGrabK > 0.001 && uMorph < 0.02) {
           vec3 q = p - uGrab;
           float gd = length(q);
           float d01 = clamp(gd / uGrabR, 0.0, 1.0);
@@ -261,17 +276,40 @@ function fieldMaterial(){
           }
         }
 
+        // 人像：每颗粒子按自己的节奏飞向照片上的一个像素点。
+        // 目标位置在相机坐标里，所以人像始终朝着你，不会被看成一张纸片。
+        vec3 targetW = uPCenter + uPRight * aTarget.x + uPUp * aTarget.y + uPNormal * aTarget.z;
+        // 人像态下每颗粒子自己轻轻抖，照片才不会像一块静止的贴图
+        targetW += vec3(
+          sin(uTime * 0.9 + aSeed * 41.0),
+          cos(uTime * 0.7 + aSeed * 29.0),
+          sin(uTime * 1.1 + aSeed * 17.0)
+        ) * (0.035 + aSeed * 0.05);
+        float mp = clamp(uMorph * 1.35 - aSeed * 0.25, 0.0, 1.0);
+        mp = mp * mp * (3.0 - 2.0 * mp);
+        // 起步快、收尾慢：先一批批冲进来，最后再轻轻落位，
+        // 中间不会长时间糊成一片
+        mp = 1.0 - pow(1.0 - mp, 3.0);
+        p = mix(p, targetW, mp);
+
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         float d = -mv.z;
         vShade = clamp(1.0 - (d - 20.0) / 150.0, 0.22, 1.0) * (1.0 + grabW * 0.35);
         vTint = aTint;
         vWarm = grabW;
-        gl_PointSize = clamp(150.0 / d, 1.2, 9.0) * (0.7 + aSeed * 0.6) * (1.0 - 0.50 * grabW);
+        vPhoto = mp;
+        vEdge = aEdge * mp;
+        vColor = aColor;
+        float sz = clamp(150.0 / d, 1.2, 9.0) * (0.7 + aSeed * 0.6) * (1.0 - 0.50 * grabW);
+        gl_PointSize = mix(sz, 2.0 * (0.6 + aSeed * 0.65) * (1.0 + aEdge * 0.5), mp);
+        gl_PointSize *= 1.0 + sin(3.14159 * mp) * 0.55;   // 飞行途中更大，聚拢过程才看得见
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
       uniform float uOpacity; uniform vec3 cA; uniform vec3 cB; uniform vec3 cC;
-      varying float vShade; varying float vTint; varying float vWarm;
+      uniform float uPhotoGain; uniform float uPlaneFade;
+      varying float vShade; varying float vTint; varying float vWarm; varying float vPhoto; varying float vEdge;
+      varying vec3 vColor;
       void main(){
         float r = length(gl_PointCoord - vec2(0.5));
         if (r > 0.5) discard;
@@ -279,13 +317,90 @@ function fieldMaterial(){
         vec3 col = mix(mix(cA, cB, vTint), cC, smoothstep(0.75, 1.0, vTint));
         // 被抓住的粒子往暖白偏，聚成球时核心才有"发光"的感觉
         col = mix(col, vec3(1.0, 0.94, 0.80), vWarm * 0.55);
-        gl_FragColor = vec4(col, a * vShade * uOpacity * (1.0 - 0.38 * vWarm));
+        col = mix(col, vColor, vPhoto * 0.92);
+        // 轮廓上偏冷白，人像就有了“光边”
+        col = mix(col, vec3(0.62, 0.84, 1.0), vEdge * 0.35);
+        // 半路发蓝白光：先是一团光，最后才落成照片
+        float transit = sin(3.14159 * vPhoto);
+        col = mix(col, vec3(0.58, 0.80, 1.0), transit * 0.55);
+        // 照片还没盖上来之前，已经落位的粒子保持冷白光，
+        // 不然深色头发和黑衣服在纯黑背景上等于不存在
+        float glow = vPhoto * (1.0 - uPlaneFade);
+        col = mix(col, vec3(0.66, 0.86, 1.0), glow * 0.8);
+        float alpha = a * vShade * uOpacity * (1.0 - 0.38 * vWarm);
+        alpha *= mix(1.0, uPhotoGain, vPhoto) * (1.0 + vEdge * 0.45)
+               * (1.0 + transit * 0.55) * (1.0 + glow * 0.35);
+        gl_FragColor = vec4(col, alpha);
       }`,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
   });
 }
 
-function buildField(){
+/**
+ * 把抠好的照片采样成 n 个粒子目标点。
+ * 位置存的是"人像平面坐标"，真正的世界坐标在着色器里按相机朝向算，
+ * 这样人像永远正面朝着你。
+ */
+async function loadPortrait(n){
+  const img = new Image();
+  img.src = PORTRAIT.url;
+  await img.decode();
+
+  const W = 380;
+  const H = Math.round(W * img.naturalHeight / img.naturalWidth);
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.drawImage(img, 0, 0, W, H);
+  const px = x.getImageData(0, 0, W, H).data;
+
+  // 人像边缘：用 alpha 的梯度找轮廓，轮廓上的粒子会更亮更大
+  const alpha = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) alpha[i] = px[i*4+3];
+  const edge = new Float32Array(W * H);
+  for (let yy = 1; yy < H-1; yy++) {
+    for (let xx = 1; xx < W-1; xx++) {
+      const i = yy*W + xx;
+      const gx = Math.abs(alpha[i+1] - alpha[i-1]);
+      const gy = Math.abs(alpha[i+W] - alpha[i-W]);
+      edge[i] = Math.min(1, (gx + gy) / 220);
+    }
+  }
+
+  const cand = [];
+  for (let i = 0, p = 0; i < W * H; i++, p += 4) {
+    if (px[p + 3] > 60) cand.push(i);
+  }
+  if (!cand.length) throw new Error('人像没有可用的像素');
+
+  const planeH = PORTRAIT.height;
+  const planeW = planeH * W / H;
+  const target = new Float32Array(n * 3);
+  const color = new Float32Array(n * 3);
+  const edgeAttr = new Float32Array(n);
+  const jx = planeW / W, jy = planeH / H;
+
+  for (let i = 0; i < n; i++) {
+    const k = cand[(Math.random() * cand.length) | 0];
+    const sx = k % W, sy = (k / W) | 0;
+    target[i*3]   = (sx / W - 0.5) * planeW + (Math.random() - 0.5) * jx;
+    target[i*3+1] = -(sy / H - 0.5) * planeH + (Math.random() - 0.5) * jy;
+    // 大部分粒子贴在照片后面，少量浮在前面当"浮尘"，
+    // 这样脸不会被点阵糊住，又保留粒子感
+    target[i*3+2] = Math.random() < 0.8
+      ? -(0.05 + Math.random() * 0.45)
+      : (0.45 + Math.random() * 0.95);
+    edgeAttr[i] = edge[k];
+    const p = k * 4;
+    // 着色器输出的是线性色，照片是 sRGB，这里先转一下
+    color[i*3]   = Math.pow(px[p]   / 255, 2.2);
+    color[i*3+1] = Math.pow(px[p+1] / 255, 2.2);
+    color[i*3+2] = Math.pow(px[p+2] / 255, 2.2);
+  }
+  return { target, color, edge: edgeAttr, img, planeW, planeH };
+}
+
+function buildField(portrait){
   const n = CFG.particles;
   const pos = new Float32Array(n*3), seed = new Float32Array(n), tint = new Float32Array(n);
   for (let i=0;i<n;i++){
@@ -302,6 +417,11 @@ function buildField(){
   g.setAttribute('position', new THREE.BufferAttribute(pos,3));
   g.setAttribute('aSeed', new THREE.BufferAttribute(seed,1));
   g.setAttribute('aTint', new THREE.BufferAttribute(tint,1));
+  if (portrait) {
+    g.setAttribute('aTarget', new THREE.BufferAttribute(portrait.target, 3));
+    g.setAttribute('aColor', new THREE.BufferAttribute(portrait.color, 3));
+    g.setAttribute('aEdge', new THREE.BufferAttribute(portrait.edge, 1));
+  }
   return g;
 }
 
@@ -350,15 +470,35 @@ async function buildScene(onStage){
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(62, 1, 0.5, 4000);
 
-  field = new THREE.Points(buildField(), fieldMaterial());
+  onStage('正在采样人像…');
+  let portrait = null;
+  try { portrait = await loadPortrait(CFG.particles); }
+  catch(e){ console.warn('人像加载失败', e); }
+
+  field = new THREE.Points(buildField(portrait), fieldMaterial());
   scene.add(field);
 
   glow = buildGlow();
   scene.add(glow);
 
+  if (portrait) {
+    const tex = new THREE.Texture(portrait.img);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+    photoMat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, opacity: 0, depthTest: false, depthWrite: false, toneMapped: false
+    });
+    photoMesh = new THREE.Mesh(new THREE.PlaneGeometry(portrait.planeW, portrait.planeH), photoMat);
+    photoMesh.renderOrder = 6;
+    photoMesh.frustumCulled = false;
+    photoMesh.visible = false;
+    scene.add(photoMesh);
+  }
+
   resize();
   window.addEventListener('resize', resize);
   window.addEventListener('orientationchange', ()=> setTimeout(resize, 250));
+  window.__ready = true;
 }
 
 function resize(){
@@ -383,6 +523,7 @@ function applyCamera(dt, elapsed){
   const up = new THREE.Vector3(0,1,0).applyAxisAngle(dir, view.roll*Math.PI/180);
   camera.up.copy(up);
   camera.lookAt(0,0,0);
+  camera.updateMatrixWorld();
 
   // 抓取：捏下时计时器开始跑，粒子按"由近到远"的顺序被吸进手心；
   // 松开后强度回落，计时器等回弹结束再归零。
@@ -406,6 +547,37 @@ function applyCamera(dt, elapsed){
     glow.material.opacity = grabMix * 0.7;
     glow.material.color.setRGB(0.72 + 0.28*grabMix, 0.86 + 0.12*grabMix, 1.0);
   }
+
+  // 人像：粒子按自己的节奏飞过去，聚拢大半之后照片再盖上来
+  portraitMix = smoothTo(portraitMix, portraitTarget, portraitTarget > 0 ? 3.4 : 3.2, dt);
+  if (DEBUG_PORTRAIT) portraitMix = 1;
+  if (!Number.isNaN(DEBUG_MORPH)) portraitMix = DEBUG_MORPH;
+  fu.uMorph.value = portraitMix;
+  // 星云用叠加混合才有光感，但照片需要正常混合，不然眼睛、眉毛这些
+  // 暗部在叠加下根本压不下去，脸会糊成一团亮斑。
+  const wantNormal = portraitMix > 0.52;
+  if (field.material.blending !== (wantNormal ? THREE.NormalBlending : THREE.AdditiveBlending)) {
+    field.material.blending = wantNormal ? THREE.NormalBlending : THREE.AdditiveBlending;
+    fu.uPhotoGain.value = wantNormal ? 0.92 : 0.62;
+  }
+  if (photoMesh) {
+    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+    const upv = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+    const fwd = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 2).negate();
+    const center = camera.position.clone().addScaledVector(fwd, PORTRAIT.ahead);
+    fu.uPCenter.value.copy(center);
+    fu.uPRight.value.copy(right);
+    fu.uPUp.value.copy(upv);
+    fu.uPNormal.value.copy(fwd).negate();   // 正方向朝相机：粒子浮在照片前面
+
+    photoMesh.position.copy(center);
+    photoMesh.quaternion.copy(camera.quaternion);
+    photoMesh.visible = portraitMix > 0.01;
+    const t = clamp((portraitMix - 0.68) / 0.30, 0, 1);
+    const eased = t * t * (3 - 2 * t);
+    photoMat.opacity = eased * PORTRAIT.photoAlpha;
+    fu.uPlaneFade.value = eased;
+  }
   renderer.render(scene, camera);
 }
 
@@ -423,7 +595,8 @@ const setLabel = (text, color='#4a9dff')=>{
 
 let lostCount = 0;
 let twoHandFrames = 0, singleFrames = 0, twoHand = false;
-let jumpCount = null, jumpSince = 0, jumpCooldown = 0;
+let oneSince = 0, lostAt = 0;
+let portraitOn = false;
 let moveBuf = [];
 const filterPalmX = { v: null }, filterPalmY = { v: null };
 
@@ -442,10 +615,17 @@ function stepHands(hands, now, dt){
     lostCount++;
     if (lostCount === CFG.lostFrames) { prevPalm = null; moveBuf = []; }
     grabTarget = DEBUG_GRAB ? 1 : 0;
-    setLabel('未检测到手', '#4a9dff');
+    if (portraitOn) {
+      if (!lostAt) lostAt = now;
+      if (now - lostAt >= CFG.portraitLostMs) { portraitOn = false; portraitTarget = 0; }
+      setLabel(portraitOn ? '人像 · 手回到画面' : '未检测到手', portraitOn ? '#c9b3ff' : '#4a9dff');
+    } else {
+      setLabel('未检测到手', '#4a9dff');
+    }
     return;
   }
   lostCount = 0;
+  lostAt = 0;
 
   const main = hands[0];
   const p = palm(main);
@@ -493,29 +673,29 @@ function stepHands(hands, now, dt){
   const n = moveBuf.length/2 || 1;
   const still = Math.hypot(sx/n, sy/n) <= CFG.stillPx;
 
-  // 比数字跳位置：伸直 1~4 根 + 拇指内收 + 基本静止
-  const canJump = f.extended >= 1 && f.extended <= 4 && f.thumbIn && still && now >= jumpCooldown;
-  if (canJump) {
-    if (jumpCount === f.extended) {
-      if (now - jumpSince >= CFG.jumpHold*1000) {
-        const spot = SPOTS[f.extended-1];
-        view.yaw = spot.yaw; view.pitch = spot.pitch; view.dist = spot.dist;
-        jumpCooldown = now + CFG.jumpCooldown*1000;
-        jumpCount = null;
-        setLabel('跳到' + spot.name, '#37e08a');
-        prevPalm = p;
-        return;
-      }
-    } else { jumpCount = f.extended; jumpSince = now; }
-  } else { jumpCount = null; }
+  // 比 1：只伸食指、拇指内收、停住一会儿 → 全场粒子收成人像。
+  // 2/3/4 暂时不接，留给后面加别的人像。
+  if (!portraitOn) {
+    const isOne = f.extended === 1 && f.thumbIn;
+    if (isOne && still) { if (!oneSince) oneSince = now; }
+    else oneSince = 0;
+    if (oneSince && now - oneSince >= CFG.portraitHoldMs) {
+      portraitOn = true;
+      portraitTarget = 1;
+      oneSince = 0;
+    }
+  } else {
+    oneSince = 0;
+  }
 
   // 手掌平移 = 朝向。用增量累加，手停住就停。
   const gx = oneEuro(filterPalmX, p.x, dt);
   const gy = oneEuro(filterPalmY, p.y, dt);
   const gain = f.scale || 1;
+  const turn = portraitOn ? 0.3 : 1;   // 人像出来时手还在动，减一点转速，人像才稳
   if (Math.hypot(dxPx, dyPx) > CFG.deadzonePx) {
-    view.yaw -= (dxPx / (gain*stage.clientWidth)) * CFG.yawGain;
-    view.pitch = clamp(view.pitch + (dyPx / (gain*stage.clientWidth)) * CFG.pitchGain,
+    view.yaw -= (dxPx / (gain*stage.clientWidth)) * CFG.yawGain * turn;
+    view.pitch = clamp(view.pitch + (dyPx / (gain*stage.clientWidth)) * CFG.pitchGain * turn,
                        -CFG.pitchLimit, CFG.pitchLimit);
     yawVel = (dxPx / (gain*stage.clientWidth)) * CFG.yawGain / Math.max(dt, 1/120);
     pitchVel = (dyPx / (gain*stage.clientWidth)) * CFG.pitchGain / Math.max(dt, 1/120);
@@ -523,11 +703,12 @@ function stepHands(hands, now, dt){
 
   // 捏合 = 抓取。指距比越小捏得越紧。
   const pinch = clamp((CFG.pinchOpen - f.pinch) / (CFG.pinchOpen - CFG.pinchShut), 0, 1);
-  grabTarget = pinch > 0.55 ? pinch : 0;
+  grabTarget = portraitOn ? 0 : (pinch > 0.55 ? pinch : 0);
   if (DEBUG_GRAB) grabTarget = 1;      // 调试用：?grab=1 强制抓取，方便无手时看效果
 
-  setLabel(grabTarget > 0.5 ? '抓取中' : '穿行中',
-           grabTarget > 0.5 ? '#ffd166' : '#37e08a');
+  if (portraitOn) setLabel('人像 · 放下手散开', '#c9b3ff');
+  else if (grabTarget > 0.5) setLabel('抓取中', '#ffd166');
+  else setLabel('穿行中', '#37e08a');
   prevPalm = p;
 }
 stepHands.lastCount = -1;
@@ -720,14 +901,16 @@ goBtn.addEventListener('click', async ()=>{
 // 调试用：控制台里能读到当前抓取状态
 window.__dbg = () => ({
   grabMix, grabT, grabTarget, dist: view.dist,
+  portraitMix, portraitTarget, portraitOn,
   grabRadius: CFG.grabRadius,
   cam: camera ? camera.position.toArray().map(v => +v.toFixed(2)) : null
 });
 // 测试用：喂合成的关键点，不依赖摄像头
 window.__test = {
   step: (hands, now, dt) => { stepHands(hands, now, dt); applyCamera(dt, now/1000); },
-  state: () => ({ grabMix, grabT, grabTarget, yaw: view.yaw, pitch: view.pitch, dist: view.dist }),
-  reset: () => { prevPalm = null; moveBuf = []; stepHands.lastCount = -1; stepHands.gapBase = null; }
+  state: () => ({ grabMix, grabT, grabTarget, portraitMix, portraitOn, yaw: view.yaw, pitch: view.pitch, dist: view.dist }),
+  reset: () => { prevPalm = null; moveBuf = []; stepHands.lastCount = -1; stepHands.gapBase = null; },
+  setPortrait: (v) => { portraitOn = !!v; portraitTarget = v ? 1 : 0; }
 };
 
 boot0();

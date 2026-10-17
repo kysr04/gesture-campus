@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>portrait cutout</title>
+<style>html,body{margin:0;background:#111;color:#ddd;font:13px system-ui}</style>
+<img id="src" src="../../assets/portrait-src.jpg" style="max-width:480px">
+<div id="log"></div>
+<script type="module">
+const log = (s) => { document.getElementById('log').textContent += s + '\n'; console.log(s); };
+const img = document.getElementById('src');
+await img.decode();
+const W = img.naturalWidth, H = img.naturalHeight;
+log('image ' + W + 'x' + H);
+
+const mod = await import('https://registry.npmmirror.com/@mediapipe/tasks-vision/1.1.1/files/vision_bundle.mjs');
+const fileset = await mod.FilesetResolver.forVisionTasks('https://registry.npmmirror.com/@mediapipe/tasks-vision/1.1.1/files/wasm');
+const seg = await mod.ImageSegmenter.createFromOptions(fileset, {
+  baseOptions: {
+    modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite',
+    delegate: 'GPU'
+  },
+  runningMode: 'IMAGE',
+  outputCategoryMask: false,
+  outputConfidenceMasks: true
+});
+log('segmenter ready');
+const out = seg.segment(img);
+const mask = out.confidenceMasks[0];
+const mw = mask.width, mh = mask.height;
+const mdata = mask.getAsFloat32Array();
+log('mask ' + mw + 'x' + mh);
+
+// 遮罩放到原图尺寸，边缘收紧一点再羽化，避免瓷砖从头发缝里透出来
+const mc = document.createElement('canvas');
+mc.width = mw; mc.height = mh;
+const mctx = mc.getContext('2d');
+const idata = mctx.createImageData(mw, mh);
+for (let i = 0; i < mw * mh; i++) {
+  const v = mdata[i];
+  // 0.30 以下算背景，0.72 以上算人，中间做软过渡
+  const a = Math.max(0, Math.min(1, (v - 0.42) / 0.38));
+  idata.data[i*4] = 255; idata.data[i*4+1] = 255; idata.data[i*4+2] = 255;
+  idata.data[i*4+3] = Math.round(a * 255);
+}
+mctx.putImageData(idata, 0, 0);
+
+const c = document.createElement('canvas');
+c.width = W; c.height = H;
+const x = c.getContext('2d');
+x.imageSmoothingEnabled = true;
+x.imageSmoothingQuality = 'high';
+x.drawImage(mc, 0, 0, W, H);
+x.globalCompositeOperation = 'source-in';
+x.drawImage(img, 0, 0, W, H);
+
+// 原图贴着画框的地方会留下一条直边（肩膀、头发被裁断），
+// 用 4% 的边距把人像淡进黑底，免得看起来像贴了张矩形照片
+const fade = Math.round(Math.min(W, H) * 0.05);
+const border = document.createElement('canvas');
+border.width = W; border.height = H;
+const bc = border.getContext('2d');
+bc.fillStyle = '#fff'; bc.fillRect(0, 0, W, H);
+bc.globalCompositeOperation = 'destination-out';
+const strip = (x0, y0, x1, y1, ax, ay, bx, by) => {
+  const gr = bc.createLinearGradient(ax, ay, bx, by);
+  gr.addColorStop(0, 'rgba(0,0,0,1)');
+  gr.addColorStop(1, 'rgba(0,0,0,0)');
+  bc.fillStyle = gr;
+  bc.fillRect(x0, y0, x1, y1);
+};
+strip(0, 0, fade, H, 0, 0, fade, 0);
+strip(W - fade, 0, fade, H, W, 0, W - fade, 0);
+strip(0, 0, W, fade, 0, 0, 0, fade);
+strip(0, H - fade, W, fade, 0, H, 0, H - fade);
+x.globalCompositeOperation = 'destination-in';
+x.drawImage(border, 0, 0);
+
+window.__cutout = c.toDataURL('image/png');
+window.__maskPreview = (() => {
+  const p = document.createElement('canvas');
+  p.width = W; p.height = H;
+  const px = p.getContext('2d');
+  px.fillStyle = '#000'; px.fillRect(0, 0, W, H);
+  px.drawImage(mc, 0, 0, W, H);
+  return p.toDataURL('image/png');
+})();
+log('done');
+</script>
