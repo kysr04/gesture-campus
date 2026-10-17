@@ -26,23 +26,27 @@ const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
     const before = t.state();
     run(one, 45);
     const shown1 = t.state();
-    run(two, 90);           // 散开 + 重新聚拢
+    run(two, 90);           // 散开 + 重新聚拢成人像2
     const shown2 = t.state();
-    return { before, shown1, shown2 };
+    run(one, 90);           // 再比 1：散开 + 切回人像1
+    const back1 = t.state();
+    return { before, shown1, shown2, back1 };
   }, { open: POSE.open(), one: POSE.counting(1), two: POSE.counting(2) });
 
   const ok =
     res.before.portraitOn === false && res.before.currentPortrait === 0 &&
     res.shown1.portraitOn === true && res.shown1.currentPortrait === 0 &&
     res.shown2.portraitOn === true && res.shown2.currentPortrait === 1 &&
-    res.shown2.switchQueue === null;
+    res.shown2.switchQueue === null &&
+    res.back1.portraitOn === true && res.back1.currentPortrait === 0;
 
   console.log(JSON.stringify({
     ok,
     phase: {
       before: { on: res.before.portraitOn, idx: res.before.currentPortrait },
       one: { on: res.shown1.portraitOn, idx: res.shown1.currentPortrait },
-      two: { on: res.shown2.portraitOn, idx: res.shown2.currentPortrait, queue: res.shown2.switchQueue }
+      two: { on: res.shown2.portraitOn, idx: res.shown2.currentPortrait, queue: res.shown2.switchQueue },
+      back1: { on: res.back1.portraitOn, idx: res.back1.currentPortrait }
     },
     errors: errs
   }, null, 2));

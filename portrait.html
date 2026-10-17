@@ -775,11 +775,12 @@ function buildField(portrait){
   g.setAttribute('aSeed', new THREE.BufferAttribute(seed,1));
   g.setAttribute('aTint', new THREE.BufferAttribute(tint,1));
   if (portrait) {
-    g.setAttribute('aTarget', new THREE.BufferAttribute(portrait.target, 3));
-    g.setAttribute('aColor', new THREE.BufferAttribute(portrait.color, 3));
-    g.setAttribute('aEdge', new THREE.BufferAttribute(portrait.edge, 1));
-    g.setAttribute('aSize', new THREE.BufferAttribute(portrait.size, 1));
-    g.setAttribute('aAlpha', new THREE.BufferAttribute(portrait.alpha, 1));
+    // 用独立副本，避免 swapPortrait 的 set() 反过来污染 portraitSets
+    g.setAttribute('aTarget', new THREE.BufferAttribute(new Float32Array(portrait.target), 3));
+    g.setAttribute('aColor', new THREE.BufferAttribute(new Float32Array(portrait.color), 3));
+    g.setAttribute('aEdge', new THREE.BufferAttribute(new Float32Array(portrait.edge), 1));
+    g.setAttribute('aSize', new THREE.BufferAttribute(new Float32Array(portrait.size), 1));
+    g.setAttribute('aAlpha', new THREE.BufferAttribute(new Float32Array(portrait.alpha), 1));
   }
   return g;
 }
