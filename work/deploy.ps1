@@ -11,7 +11,6 @@ Set-Location -LiteralPath ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoo
 New-Item -ItemType Directory -Force -Path "dist" | Out-Null
 
 Copy-Item -LiteralPath "index.html" -Destination "dist\index.html" -Force
-Copy-Item -LiteralPath "campus.html" -Destination "dist\campus.html" -Force
 Copy-Item -LiteralPath "particle.html" -Destination "dist\particle.html" -Force
 Copy-Item -LiteralPath "portrait.html" -Destination "dist\portrait.html" -Force
 Copy-Item -LiteralPath "hand_landmarker.task" -Destination "dist\hand_landmarker.task" -Force
@@ -20,12 +19,6 @@ Copy-Item -LiteralPath "hand_landmarker.task" -Destination "dist\hand_landmarker
 New-Item -ItemType Directory -Force -Path "dist\assets" | Out-Null
 Copy-Item -LiteralPath "assets\portrait.png" -Destination "dist\assets\portrait.png" -Force
 Copy-Item -LiteralPath "assets\portrait-particles.json" -Destination "dist\assets\portrait-particles.json" -Force
-
-# Campus data must ship too. heights.json travels with it so building heights can
-# be corrected later by editing that one file and redeploying -- no code change.
-New-Item -ItemType Directory -Force -Path "dist\campus" | Out-Null
-Copy-Item -LiteralPath "campus\campus.json" -Destination "dist\campus\campus.json" -Force
-Copy-Item -LiteralPath "campus\heights.json" -Destination "dist\campus\heights.json" -Force
 
 Write-Output "synced dist:"
 Get-ChildItem -Recurse dist | Where-Object { -not $_.PSIsContainer } |
