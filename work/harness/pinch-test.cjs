@@ -1,58 +1,109 @@
 /**
- * 粒子页抓取判定测试：用合成关键点驱动 stepHands，不需要摄像头。
- * 输出各阶段 grabTarget / grabMix，判断捏合能否稳定触发、张开能否释放。
+ * 连续捏合测试。
+ * 用法: node work/harness/pinch-test.cjs [url]
  */
 const { chromium } = require("playwright");
 const { POSE } = require("./hands.cjs");
 
-const URL_ARG = process.argv[2] || "http://127.0.0.1:8765/particle.html?debug";
+const URL_ARG = process.argv[2] || "http://127.0.0.1:8765/portrait.html";
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 
-const open = POSE.open();
-const pinch = POSE.pinch();
-const ramp = Array.from({ length: 40 }, (_, i) => POSE.pinchRamp((i + 1) / 40));
+function cloneHands(h) {
+  return h.map((p) => ({ x: p.x, y: p.y }));
+}
+
+async function resetNoShape(page) {
+  await page.evaluate(() => {
+    window.__test.setShape(0);
+    window.__test.setPortrait(false);
+    window.__test.reset();
+  });
+}
+
+async function runHand(page, hand, frames = 50) {
+  return page.evaluate(({ hand, frames }) => {
+    let now = 1000;
+    for (let i = 0; i < frames; i++) {
+      now += 1000 / 30;
+      window.__test.step([hand], now, 1 / 30);
+    }
+    return window.__test.state();
+  }, { hand, frames });
+}
+
+async function runOverride(page, value, frames = 60) {
+  return page.evaluate(({ value, frames }) => {
+    window.__test.setPinch(value);
+    let now = 1000;
+    for (let i = 0; i < frames; i++) {
+      now += 1000 / 30;
+      window.__test.step([], now, 1 / 30);
+    }
+    return window.__test.state();
+  }, { value, frames });
+}
 
 (async () => {
-  const ctx = await chromium.launchPersistentContext("work/.chrome-profile", {
-    executablePath: CHROME, headless: true, viewport: { width: 1280, height: 800 },
-    args: ["--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader"]
+  const browser = await chromium.launch({
+    executablePath: CHROME,
+    headless: true,
+    args: [
+      "--enable-unsafe-swiftshader",
+      "--use-gl=angle",
+      "--use-angle=swiftshader",
+      "--force-color-profile=srgb",
+      "--hide-scrollbars"
+    ]
   });
-  const page = ctx.pages()[0] || (await ctx.newPage());
-  const errs = [];
-  page.on("pageerror", (e) => errs.push(e.message));
-  await page.goto(URL_ARG, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => !!window.__test, null, { timeout: 60000 });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const pageErrors = [];
+  page.on("pageerror", (e) => pageErrors.push(String(e)));
 
-  const res = await page.evaluate(({ open, pinch, ramp }) => {
-    const t = window.__test;
-    t.reset();
-    let now = 1000, dt = 1 / 60;
-    // 先张手稳住基准
-    for (let i = 0; i < 40; i++) { t.step([open], now, dt); now += 16; }
-    const base = t.state();
-    // 渐进捏合
-    for (const h of ramp) { t.step([h], now, dt); now += 16; }
-    const mid = t.state();
-    for (let i = 0; i < 40; i++) { t.step([pinch], now, dt); now += 16; }
-    const held = t.state();
-    // 张开
-    for (let i = 0; i < 60; i++) { t.step([open], now, dt); now += 16; }
-    const released = t.state();
-    return { base, mid, held, released };
-  }, { open, pinch, ramp });
+  const results = [];
+  const check = (name, ok, detail) => results.push({ name, ok: !!ok, detail });
 
-  const okPinch = res.mid.grabTarget > 0.5 && res.held.grabMix > 0.9;
-  const okRelease = res.released.grabMix < 0.05 && res.released.grabT === 0;
-  console.log(JSON.stringify({
-    ok: okPinch && okRelease,
-    phase: {
-      open: { target: res.base.grabTarget, mix: +res.base.grabMix.toFixed(2) },
-      pinchMid: { target: +res.mid.grabTarget.toFixed(2), mix: +res.mid.grabMix.toFixed(2) },
-      held: { target: +res.held.grabTarget.toFixed(2), mix: +res.held.grabMix.toFixed(2) },
-      released: { target: res.released.grabTarget, mix: +res.released.grabMix.toFixed(3), t: +res.released.grabT.toFixed(3) }
-    },
-    errors: errs
-  }, null, 2));
-  await ctx.close();
-  process.exit(okPinch && okRelease ? 0 : 1);
-})();
+  await page.goto(URL_ARG, { waitUntil: "domcontentloaded", timeout: 60000 });
+  await page.waitForFunction(() => window.__ready === true, null, { timeout: 60000 });
+
+  // 真实手势到 grabTarget 的映射
+  await resetNoShape(page);
+  const open = await runHand(page, cloneHands(POSE.open()));
+  check("张开手掌 grabTarget≈0", open.grabTarget < 0.05, `target=${open.grabTarget.toFixed(3)}`);
+
+  await resetNoShape(page);
+  const mid = await runHand(page, cloneHands(POSE.pinchRamp(0.8)), 12);
+  check(
+    "半捏能开始蓄力",
+    mid.grabHeld === true && mid.heartCharge > 0.05 && mid.grabTarget > 0.1,
+    `held=${mid.grabHeld} charge=${mid.heartCharge.toFixed(3)} target=${mid.grabTarget.toFixed(3)}`
+  );
+
+  await resetNoShape(page);
+  const shut = await runHand(page, cloneHands(POSE.pinch()), 110);
+  check("捏紧完成蓄力", shut.heartCharge > 0.9 && shut.grabTarget > 0.9, `charge=${shut.heartCharge.toFixed(3)} target=${shut.grabTarget.toFixed(3)}`);
+
+  // 连续 override：0 → 0.3 → 0.6 → 1 → 0
+  await resetNoShape(page);
+  const m0 = await runOverride(page, 0.0, 40);
+  const m3 = await runOverride(page, 0.3, 60);
+  const m6 = await runOverride(page, 0.6, 60);
+  const m10 = await runOverride(page, 1.0, 60);
+  const back = await runOverride(page, 0.0, 80);
+
+  check(
+    "grabMix 随捏合力度单调增加",
+    m3.grabMix > m0.grabMix + 0.15 &&
+      m6.grabMix > m3.grabMix + 0.15 &&
+      m10.grabMix > m6.grabMix + 0.15,
+    `0=${m0.grabMix.toFixed(2)} .3=${m3.grabMix.toFixed(2)} .6=${m6.grabMix.toFixed(2)} 1=${m10.grabMix.toFixed(2)}`
+  );
+  check("松开后回到接近 0", back.grabMix < 0.05, `mix=${back.grabMix.toFixed(3)}`);
+  check("没有 pageerror", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));
+
+  console.log(JSON.stringify({ results, passed: results.filter((r) => r.ok).length, total: results.length }, null, 2));
+  await browser.close();
+  process.exit(results.every((r) => r.ok) ? 0 : 1);
+})().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

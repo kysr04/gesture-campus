@@ -4,73 +4,160 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <link rel="icon" href="data:,">
-<title>粒子手势 · Particle Field</title>
+<title>粒子自我 · Particle Self</title>
+<meta name="description" content="用手势把照片变成会呼吸的 3D 粒子。摄像头画面只在本机处理。">
+<meta name="theme-color" content="#04060e">
 <style>
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;background:#04060e;color:#e6eeff;overflow:hidden;
-    font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
-  #app{display:flex;height:100%}
-  #side{flex:0 0 280px;display:flex;flex-direction:column;gap:10px;padding:12px;
-    background:#070a13;border-right:1px solid #141d31}
-  #side h1{margin:0;font-size:13px;font-weight:600;letter-spacing:.06em;color:#7d90b5}
-  #cam{display:block;width:100%;aspect-ratio:4/3;background:#000;border-radius:10px;
-    border:1px solid #141d31}
-  #state{display:flex;align-items:center;gap:8px;padding:9px 11px;border-radius:10px;
-    background:#0b1120;border:1px solid #1a2540;font-size:14px;font-weight:600}
+    font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  #app{position:relative;height:100%;width:100%;overflow:hidden}
+  #stage{position:absolute;inset:0}
+  #stage canvas{display:block;width:100%;height:100%}
+  #side{position:absolute;z-index:6;left:20px;top:20px;bottom:20px;width:280px;
+    display:flex;flex-direction:column;gap:12px;padding:16px;
+    background:rgba(7,10,19,.72);border:1px solid rgba(120,160,255,.18);border-radius:20px;
+    box-shadow:0 24px 70px rgba(0,0,0,.48);backdrop-filter:blur(18px);
+    -webkit-backdrop-filter:blur(18px);overflow:auto}
+  #brand{display:flex;align-items:center;gap:10px}
+  #brand .mark{width:30px;height:30px;border-radius:10px;display:grid;place-items:center;
+    background:linear-gradient(135deg,rgba(127,224,255,.2),rgba(55,224,138,.14));
+    border:1px solid rgba(127,224,255,.25);color:#9fe8ff;font-size:14px}
+  #brand h1{margin:0;font-size:17px;font-weight:650;letter-spacing:.10em;color:#e6eeff}
+  #brand span{display:block;margin-top:2px;font-size:8.5px;letter-spacing:.18em;color:#5f7093}
+  #cam{display:block;width:100%;aspect-ratio:4/3;background:#000;border-radius:12px;
+    border:1px solid rgba(120,160,255,.14);opacity:.92}
+  #state{display:flex;align-items:center;gap:8px;padding:9px 11px;border-radius:11px;
+    background:rgba(11,17,32,.75);border:1px solid rgba(120,160,255,.14);font-size:13px;font-weight:600}
   #dot{width:8px;height:8px;border-radius:50%;background:#4a9dff;animation:blink 1.1s infinite}
   @keyframes blink{50%{opacity:.25}}
-  #hint{font-size:11.5px;color:#5f7093;line-height:1.75;margin-top:auto}
-  #hint b{color:#8ea3c8}
-  #stage{position:relative;flex:1;min-width:0}
-  #stage canvas{display:block;width:100%;height:100%}
-  #hud{position:absolute;left:16px;top:14px;font-size:12px;color:#5d6c8c;pointer-events:none}
-  #boot{position:fixed;inset:0;z-index:9;display:flex;flex-direction:column;
-    align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px;
-    background:radial-gradient(circle at 50% 40%,rgba(14,22,44,.92),rgba(4,6,14,.97))}
+  #demo-now{width:100%;padding:9px 12px;border:1px solid rgba(127,224,255,.24);border-radius:11px;
+    background:linear-gradient(135deg,rgba(127,224,255,.12),rgba(55,224,138,.08));
+    color:#bfe9ff;font:inherit;font-size:12px;font-weight:600;cursor:pointer}
+  #demo-now:hover{background:linear-gradient(135deg,rgba(127,224,255,.2),rgba(55,224,138,.14))}
+  #settings{font-size:11px;color:#7d90b5}
+  #settings summary{cursor:pointer;list-style:none;padding:2px 0;color:#7d90b5}
+  #settings summary::-webkit-details-marker{display:none}
+  #settings summary::before{content:"⚙ ";}
+  #cal-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  #cal-row button{flex:1 1 auto;padding:7px 8px;border:1px solid rgba(120,160,255,.16);border-radius:8px;
+    background:rgba(11,17,32,.8);color:#8ea3c8;font:inherit;font-size:10.5px;cursor:pointer}
+  #cal-row button:hover{background:#111a2c;color:#cfe0ff}
+  #cal-info{margin-top:6px;font-size:10px;color:#5f7093;line-height:1.4}
+  #hint{font-size:11px;color:#6f7f9f;line-height:1.8;margin-top:auto}
+  #hint b{color:#9fb2d8;font-weight:600}
+  #footnote{font-size:9.5px;color:#4f5d7a;letter-spacing:.04em}
+  #hud{position:absolute;z-index:4;right:22px;top:22px;padding:8px 13px;border-radius:999px;
+    background:rgba(7,10,19,.58);border:1px solid rgba(120,160,255,.14);
+    color:#8ea3c8;font-size:11px;letter-spacing:.04em;pointer-events:none;backdrop-filter:blur(10px)}
+  #boot{position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;
+    padding:28px;text-align:center;overflow:auto;
+    background:
+      radial-gradient(circle at 50% 45%,rgba(20,44,92,.38),rgba(4,6,14,.86) 58%,rgba(4,6,14,.96)),
+      linear-gradient(180deg,rgba(4,6,14,.35),rgba(4,6,14,.9));
+    backdrop-filter:blur(1.5px);-webkit-backdrop-filter:blur(1.5px)}
   #boot.off{display:none}
-  #msg{font-size:13px;color:#7d90b5;max-width:440px;line-height:1.7}
-  #bar{width:min(340px,76vw);height:6px;border-radius:3px;background:#141d31;overflow:hidden}
+  .boot-inner{width:min(720px,100%);display:flex;flex-direction:column;align-items:center;gap:18px;
+    animation:rise .8s cubic-bezier(.2,.8,.2,1) both}
+  @keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+  .brand{font-size:10px;letter-spacing:.28em;color:#6f9dff;text-transform:uppercase}
+  #boot h1{margin:0;font-size:clamp(34px,6vw,58px);line-height:1.08;font-weight:650;letter-spacing:-.02em}
+  #boot h1 em{font-style:normal;background:linear-gradient(110deg,#9fe8ff,#6f9dff 45%,#d6c4ff);
+    -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  #boot .sub{margin:0;max-width:560px;font-size:14px;line-height:1.8;color:#8ea3c8}
+  .cta{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;margin-top:4px}
+  #go,#demo-btn{padding:13px 26px;border-radius:999px;font:inherit;font-size:14px;font-weight:650;cursor:pointer}
+  #go{border:0;color:#04121f;background:linear-gradient(135deg,#7fe0ff,#37e08a);box-shadow:0 10px 34px rgba(55,224,138,.24)}
+  #go[disabled]{opacity:.35;cursor:default}
+  #demo-btn{border:1px solid rgba(127,224,255,.26);color:#bfe9ff;background:rgba(7,10,19,.52)}
+  #demo-btn:hover{background:rgba(127,224,255,.1)}
+  .steps{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;margin-top:4px}
+  .steps span{padding:6px 11px;border-radius:999px;background:rgba(7,10,19,.52);
+    border:1px solid rgba(120,160,255,.13);font-size:10.5px;color:#7d90b5}
+  #msg{font-size:12px;color:#7d90b5;max-width:460px;line-height:1.7}
+  #bar{width:min(320px,70vw);height:4px;border-radius:3px;background:rgba(20,29,49,.9);overflow:hidden}
   #fill{height:100%;width:0;background:linear-gradient(90deg,#4a9dff,#37e08a);transition:width .2s}
-  #go{padding:12px 40px;border:0;border-radius:999px;font:inherit;font-size:16px;
-    font-weight:600;color:#04121f;background:linear-gradient(135deg,#7fe0ff,#37e08a)}
-  #go[disabled]{opacity:.35}
-  #err{font-size:12.5px;color:#ff8b8b;max-width:460px;white-space:pre-wrap;line-height:1.6}
-  @media (orientation:portrait) and (max-width:900px){
-    #app{display:block}
-    #stage{position:absolute;inset:0}
-    #side{position:absolute;z-index:5;top:12px;left:12px;width:150px;flex:none;padding:8px;
-      gap:6px;background:rgba(7,10,19,.85);border:1px solid #1a2540;border-radius:12px}
-    #hint{display:none}
-    #state{font-size:11.5px;padding:6px 8px}
+  #err{font-size:12px;color:#ff8b8b;max-width:460px;white-space:pre-wrap;line-height:1.6}
+  .privacy{font-size:10px;color:#4f5d7a;letter-spacing:.04em}
+  #demo-exit{display:none;position:fixed;z-index:30;right:20px;bottom:20px;padding:10px 16px;border-radius:999px;
+    background:rgba(7,10,19,.72);border:1px solid rgba(127,224,255,.24);color:#bfe9ff;
+    font-size:12px;text-decoration:none;backdrop-filter:blur(12px)}
+  #burst-flash{position:fixed;inset:0;z-index:24;pointer-events:none;opacity:0;
+    background:radial-gradient(circle at 50% 50%,rgba(255,184,224,.85),rgba(255,110,190,.28) 32%,transparent 66%);
+    mix-blend-mode:screen}
+  body.demo #demo-exit{display:block}
+  body.demo #side{display:none}
+  @media (max-width:760px){
+    #side{left:12px;top:12px;bottom:auto;width:160px;padding:10px;gap:7px;border-radius:14px}
+    #brand h1{font-size:13px}
+    #brand span{font-size:7px}
+    #state{font-size:10.5px;padding:6px 8px}
+    #demo-now{padding:7px 8px;font-size:10.5px}
+    #hint,#footnote{display:none}
+    #hud{right:12px;top:12px;font-size:9.5px;padding:6px 9px}
+    #boot h1{font-size:32px}
+    #boot .sub{font-size:12.5px}
+    #go,#demo-btn{width:100%;max-width:280px}
+    .steps{display:none}
   }
 </style>
 </head>
 <body>
 <div id="app">
   <aside id="side">
-    <h1>手势输入</h1>
+    <div id="brand">
+      <div class="mark">✦</div>
+      <div><h1>粒子自我</h1><span>PARTICLE SELF</span></div>
+    </div>
     <canvas id="cam" width="320" height="240"></canvas>
     <div id="state"><span id="dot"></span><span id="label">初始化</span></div>
+    <button id="demo-now" type="button">▶ 观看演示</button>
+    <details id="settings">
+      <summary>设置与标定</summary>
+      <div id="cal-row">
+        <button id="calibrate" type="button">标定捏合</button>
+        <button id="cal-reset" type="button">重置</button>
+      </div>
+      <div id="cal-info">默认捏合范围</div>
+    </details>
     <div id="hint">
-      <b>手掌平移</b> 在粒子中穿行<br>
-      <b>比 1</b> 原色人像<br>
-      <b>比 2</b> 蓝色调人像<br>
-      <b>捏合</b> 把周围的粒子吸进掌心<br>
-      <b>两只手</b> 推进 / 后退<br>
-      <b>手离开画面</b> 人像散开
+      <b>手掌平移</b> 穿行<br>
+      <b>捏住</b> 蓄力成心<br>
+      <b>松手</b> 爆炸<br>
+      <b>快速双捏</b> 锁定 / 解锁<br>
+      <b>比 1–3 / 小指</b> 切换形态<br>
+      <b>双手</b> 推进 / 后退
     </div>
+    <div id="footnote">本地运行 · 摄像头不出设备</div>
   </aside>
   <main id="stage">
     <canvas id="gl"></canvas>
-    <div id="hud">粒子场 · 手掌即方向</div>
+    <div id="hud">粒子自我 · 手掌即方向</div>
   </main>
 </div>
+<a id="demo-exit" href="./portrait.html">用手体验 →</a>
+<div id="burst-flash"></div>
 
 <div id="boot">
-  <div id="msg">正在准备…</div>
-  <div id="bar"><div id="fill"></div></div>
-  <button id="go" disabled>加载中</button>
-  <div id="err"></div>
+  <div class="boot-inner">
+    <div class="brand">Particle Self · 手势粒子人像</div>
+    <h1>让你的照片<br><em>变成会呼吸的粒子</em></h1>
+    <p class="sub">抬手穿过星云，捏住蓄力成心，松手爆炸。所有画面只在本机运行，摄像头画面不会离开设备。</p>
+    <div class="cta">
+      <button id="go" disabled>加载摄像头…</button>
+      <button id="demo-btn" type="button">观看演示</button>
+    </div>
+    <div class="steps">
+      <span>手掌平移 · 穿行</span>
+      <span>捏住蓄力 · 松手爆炸</span>
+      <span>比 1–3 / 小指 · 切换形态</span>
+    </div>
+    <div id="msg">正在准备粒子场…</div>
+    <div id="bar"><div id="fill"></div></div>
+    <div id="err"></div>
+    <div class="privacy">本地运行 · 无需上传 · 摄像头画面不出设备</div>
+  </div>
 </div>
 
 <script type="module">
@@ -97,20 +184,51 @@ const CFG = {
   smoothMin: 10, smoothBeta: 0.6,
   grabAhead: 7,            // 抓取球心放在相机前方多远
   grabRadius: 22,          // 引力半径：太大边上一圈粒子只挪一半，会糊成一团
+  palmAhead: 9,            // 手掌力场中心放在相机前方多远
+  palmRadius: 20,          // 手掌排斥/旋涡的影响半径
   grabSpin: 2.9,           // 汇聚时绕视线轴的旋转量，转起来才像"被吸走"
   grabRamp: 0.30,          // 单个粒子从原位缩到球心的耗时
   grabWave: 0.45,          // 波前延迟：越远的粒子越晚动，形成向内涌的层次
   pinchOpen: 0.85,         // 指距比高于此值视为张开
   pinchShut: 0.35,         // 低于此值视为捏紧
+  pinchChargeSec: 2.2,     // 捏住多久充满
+  pinchBurstDelayMs: 300,  // 松手后等这么久再爆炸，给双捏留窗口
+  pinchDoubleMs: 400,      // 双捏判定窗口
   portraitHoldMs: 480,     // 比 1 停住多久算“叫人像出来”
   portraitLostMs: 1200,    // 手离开画面多久后人像散开
   stillPx: 5,              // 短窗口平均位移低于此值算静止
   stillWindow: 8,
+  flickTau: 0.5,           // 甩动惯性衰减时间常数，秒
+  flickMin: 12,            // 低于这个角速度就不滑行
+  flickWindow: 6,
+  reacquireSec: 0.15,      // 手回来后的增益渐入
   lostFrames: 6,
   twoHandConfirm: 3,
   twoHandExit: 5,
   dprLimit: 2
 };
+
+// 形态表。手指 1/2/3/4 分别对应 0/1/2/3。
+// 0/1 是平面人像，2/3 是局部 3D 形态，仍然走同一套 aTarget/aColor/aSize 管线。
+const SHAPES = [
+  { id: 'portrait',  label: '人像1', kind: 'portrait' },
+  { id: 'portrait2', label: '人像2', kind: 'portrait' },
+  { id: 'galaxy',    label: '银河',  kind: 'shape' },
+  { id: 'dna',       label: 'DNA',   kind: 'shape' }
+];
+const isPortraitShape = (idx) => !!(SHAPES[idx] && SHAPES[idx].kind === 'portrait');
+
+const PINCH_CAL_KEY = 'particle-pinch-cal-v1';
+function readPinchCal(){
+  try {
+    const raw = JSON.parse(localStorage.getItem(PINCH_CAL_KEY) || 'null');
+    if (raw && Number.isFinite(raw.lo) && Number.isFinite(raw.hi) && raw.hi - raw.lo >= 0.2) {
+      return { lo: raw.lo, hi: raw.hi, calibrated: true };
+    }
+  } catch(_) {}
+  return { lo: CFG.pinchShut, hi: CFG.pinchOpen, calibrated: false };
+}
+let pinchCal = readPinchCal();
 
 // 人像：一张抠好的透明底照片，所有粒子最后都落到它上面
 const PORTRAIT = {
@@ -150,6 +268,10 @@ const DEBUG_GRAB = new URLSearchParams(location.search).get('grab') === '1';
 const DEBUG_GRAB_HOLD = new URLSearchParams(location.search).get('grab') === '2';
 const DEBUG_PORTRAIT = new URLSearchParams(location.search).get('portrait') === '1';
 const DEBUG_MORPH = parseFloat(new URLSearchParams(location.search).get('morph'));
+const DEBUG_SHAPE = parseInt(new URLSearchParams(location.search).get('shape'), 10);
+const DEBUG_PINCH = parseFloat(new URLSearchParams(location.search).get('pinch'));
+const DEBUG_QUALITY_LOCK = new URLSearchParams(location.search).get('lockq') === '1';
+const DEMO_MODE = new URLSearchParams(location.search).get('demo') === '1';
 // 三个可调项：n=粒子数，drift=漂移幅度，tw=闪烁幅度
 const QS = new URLSearchParams(location.search);
 const TUNE = {
@@ -160,7 +282,18 @@ const TUNE = {
   edge: parseFloat(QS.get('edge'))
 };
 const PORTRAIT_POINT_SIZE = 3.3;
-if (Number.isFinite(TUNE.n) && TUNE.n >= 20000 && TUNE.n <= 220000) CFG.particles = TUNE.n;
+const QUALITY = { low: 9000, mid: 15000, high: 24000 };
+const QUALITY_ORDER = ['low', 'mid', 'high'];
+const QUALITY_LABEL = { low: '低画质', mid: '中画质', high: '高画质', custom: '自定义' };
+const qParam = QS.get('q');
+let qualityLevel = QUALITY[qParam] ? qParam : 'mid';
+if (QUALITY[qParam]) CFG.particles = QUALITY[qParam];
+if (Number.isFinite(TUNE.n) && TUNE.n >= 2000 && TUNE.n <= 220000) {
+  CFG.particles = TUNE.n;
+  qualityLevel = 'custom';
+}
+let activeParticles = CFG.particles;
+const INITIAL_QUALITY_LEVEL = qualityLevel;
 const lerp = (a,b,t)=> a+(b-a)*t;
 const wait = ms=> new Promise(r=>setTimeout(r,ms));
 
@@ -195,22 +328,56 @@ function fingers(lm){
 const view = { yaw: 0, pitch: 0, dist: 0.35, roll: 0 };
 let prevPalm = null;
 let yawVel = 0, pitchVel = 0;
+let flick = [];              // 最近几帧的 yaw/pitch 增量
+let coasting = null;         // { yaw, pitch } 角速度，度/秒
+let awaitingReacquire = false;
+let gainRamp = 1;
 let bob = 0;               // 相机前向惯量
 
 /* ------------------------------ 场景 ---------------------------------- */
 
 const stage = document.getElementById('stage');
 const glCanvas = document.getElementById('gl');
+const hudEl = document.getElementById('hud');
 let THREE = null, renderer = null, scene = null, camera = null;
 let field = null, glow = null, aura = null, portraitInfo = null, portraitMesh = null;
-let portraitSets = [null, null];   // [0]=JSON原色，[1]=照片蓝色调
-let currentPortrait = 0;
+let genericGlow = null, photoGlow = null;
+// [0]=JSON原色人像，[1]=照片蓝色调人像，[2]=银河，[3]=DNA
+let portraitSets = [null, null, null, null];
+let currentPortrait = 0;             // 当前形态索引，沿用旧名字减少改动
 let switchQueue = null;             // 待切换的目标 index
 let grabMix = 0, grabTarget = 0, grabT = 0;
 let grabHeld = false;                       // 捏合滞后：避免临界抖动
+let pinchOverride = null;                   // 测试/截图时强制一个捏合强度
+let heartCharge = 0;
+let heartLocked = false;
+let lockedCharge = 0;
+let pendingBurstAt = 0;
+let lastPinchReleaseAt = 0;
+let lastPinchReleaseCharge = 0;
+let lastPinch01 = 0;
+let burstK = 0, burstKick = 0;
+let heartCooldownUntil = 0;
+let waitPinchRelease = false;
 const pinchPoint = { x: 0.5, y: 0.5 };      // 拇指-食指捏合点（归一化图像坐标）
 const filterPinchX = { v: null }, filterPinchY = { v: null };
+const palmPoint = { x: 0.5, y: 0.5 };       // 掌心在画面里的位置
+const heartPoint = { x: 0.5, y: 0.5 };      // 爱心贴在掌心的位置
+const filterPalmCenterX = { v: null }, filterPalmCenterY = { v: null };
+const filterHeartX = { v: null }, filterHeartY = { v: null };
+let palmTarget = 0, palmStrength = 0;
+let palmPresent = false;
 let portraitMix = 0, portraitTarget = 0;
+let qualityAccum = 0, qualityFrames = 0, qualityCooldown = 0;
+let demoCaption = '星云';
+let trailScene = null, trailCamera = null;
+let trailFadeMat = null;
+let heartAura = null;
+let chargeRing = null;
+let burstRing = null, burstFlash = null;
+let burstFxT = 1e9;
+const BURST_FX_LIFE = 0.8;
+const TRAILS_ENABLED = new URLSearchParams(location.search).get('trails') !== '0';
 
 async function loadThree(onStage){
   let err = null;
@@ -232,7 +399,12 @@ function fieldMaterial(){
       uGrabUp: { value: new THREE.Vector3(0, 1, 0) },    // 心形所在平面的上方向
       uGrabR: { value: 26 },                             // 影响半径
       uGrabK: { value: 0 },                              // 强度 0~1
+      uGrabForm: { value: 0 },                           // 位置成形：比亮度更快到位
       uGrabT: { value: 0 },                              // 从捏下开始经过的秒数
+      uPalm: { value: new THREE.Vector3(0, 0, -999) },    // 手掌力场中心
+      uPalmR: { value: CFG.palmRadius },
+      uPalmK: { value: 0 },
+      uBurstK: { value: 0 },
       uMorph: { value: 0 },                              // 0=星云 1=人像
       uPCenter: { value: new THREE.Vector3() },
       uPRight: { value: new THREE.Vector3(1,0,0) },
@@ -255,7 +427,9 @@ function fieldMaterial(){
       attribute float aSize; attribute float aAlpha;
       uniform float uTime;
       uniform vec3 uGrab; uniform vec3 uGrabAxis; uniform vec3 uGrabRight; uniform vec3 uGrabUp;
-      uniform float uGrabR; uniform float uGrabK; uniform float uGrabT;
+      uniform float uGrabR; uniform float uGrabK; uniform float uGrabForm; uniform float uGrabT;
+      uniform vec3 uPalm; uniform float uPalmR; uniform float uPalmK;
+      uniform float uBurstK;
       uniform vec3 uPCenter; uniform vec3 uPRight; uniform vec3 uPUp; uniform vec3 uPNormal;
       uniform float uMorph; uniform float uDrift; uniform float uSize;
       uniform float uHeadTurn; uniform float uHeadTilt; uniform float uPortraitH;
@@ -275,6 +449,19 @@ function fieldMaterial(){
         p.y += cos(t * 0.53) * 1.1;
         p.z += sin(t * 0.61 + 1.7) * 1.6;
 
+        // 手掌力场：掌心附近的粒子被推开，同时绕视线轴轻微旋涡。
+        if (uPalmK > 0.001) {
+          vec3 pd = p - uPalm;
+          float pdlen = length(pd);
+          float pf = 1.0 - smoothstep(0.0, uPalmR, pdlen);
+          if (pf > 0.0001) {
+            vec3 pdir = pd / max(pdlen, 0.0001);
+            vec3 swirl = normalize(cross(normalize(uGrabAxis), pdir) + vec3(0.00001));
+            float palmFade = (1.0 - smoothstep(0.0, 0.08, uMorph)) * (1.0 - uGrabK * 0.65);
+            p += (pdir * 7.5 + swirl * 2.4) * pf * uPalmK * palmFade;
+          }
+        }
+
         // 抓取：半径内的粒子错开起跑，先后飞进手心里的一颗霓虹爱心。
         float grabW = 0.0;
         vHeartG = 0.0;
@@ -285,8 +472,10 @@ function fieldMaterial(){
           float falloff = 1.0 - smoothstep(0.55, 1.0, d01);
           float start = clamp((uGrabT - d01 * 0.45) / 0.30, 0.0, 1.0);
           start = start * start * (3.0 - 2.0 * start);
-          float k = start * uGrabK * falloff;
-          if (k > 0.0005) {
+          // 位置用 form 快速成形，亮度用 uGrabK 跟随捏合力度慢慢加深。
+          float k = start * uGrabForm * falloff;
+          float heat = start * pow(max(uGrabK, 0.0001), 0.62) * falloff;
+          if (max(k, heat) > 0.0005) {
             vec3 axis = normalize(uGrabAxis);
             vec3 right = normalize(uGrabRight);
             vec3 upv = normalize(uGrabUp);
@@ -295,18 +484,30 @@ function fieldMaterial(){
             float th = aSeed * 6.28318 + uTime * 0.55;
             float hx = 16.0 * pow(sin(th), 3.0) / 17.0;
             float hy = (13.0 * cos(th) - 5.0 * cos(2.0 * th) - 2.0 * cos(3.0 * th) - cos(4.0 * th)) / 17.0 + 0.18;
-            // 74% 的粒子贴在外轮廓，其余散在内部，像霓虹灯管 + 薄雾
-            float rr = hh < 0.74 ? (0.90 + hh / 0.74 * 0.10) : (0.12 + (hh - 0.74) / 0.26 * 0.62);
-            float pulse = 1.0 + 0.045 * sin(uTime * 2.4);
+            // 90% 的粒子贴在外轮廓，内部只留很薄一层，避免高蓄力糊成白团
+            float rr = hh < 0.90 ? (0.90 + hh / 0.90 * 0.10) : (0.12 + (hh - 0.90) / 0.10 * 0.62);
+            float heartScale = 1.8 + 0.9 * uGrabK;
+            float pulse = 1.0 + 0.10 * uGrabK * sin(uTime * 6.28318 * (1.0 + 0.6 * uGrabK));
             vec3 heartW = uGrab
-              + (right * hx + upv * hy) * 2.3 * rr * pulse
+              + (right * hx + upv * hy) * heartScale * rr * pulse
               + axis * ((hh - 0.5) * 0.45);
             // 飞行途中绕视线轻轻转一下，落进心形时有收束感
             vec3 swing = rotAxis(p - uGrab, axis, k * 0.5);
             p = uGrab + mix(swing, heartW - uGrab, k);
-            grabW = k;
-            vHeartG = clamp(hy * 2.3 * rr / 2.4 + 0.5, 0.0, 1.0);
+            grabW = heat;
+            vHeartG = clamp(hy * heartScale * rr / 2.7 + 0.5, 0.0, 1.0);
           }
+        }
+
+        // 松手爆炸：爱心附近的粒子沿各自方向冲出去。
+        if (uBurstK > 0.001) {
+          vec3 bd = p - uGrab;
+          float bl = length(bd);
+          float bf = 1.0 - smoothstep(0.0, 11.0, bl);
+          vec3 bdir = normalize(bd + vec3(
+            sin(aSeed * 91.7), cos(aSeed * 63.1), sin(aSeed * 37.9)
+          ) * 0.35);
+          p += bdir * uBurstK * bf * 9.5;
         }
 
         // 人像：aTarget 是照片平面上的点，z 是从明暗和轮廓估出来的厚度。
@@ -346,14 +547,17 @@ function fieldMaterial(){
         vDust = dust * mp;
         vDepth = local.z;
         vAlpha = aAlpha;
-        float sz = clamp(150.0 / d, 1.2, 9.0) * (0.7 + aSeed * 0.6) * (1.0 + 0.20 * grabW);
+        float halo = step(0.90, fract(aSeed * 17.0));
+        float sz = clamp(150.0 / d, 1.2, 9.0) * (0.7 + aSeed * 0.6)
+          * (1.0 + 0.18 * grabW + 0.45 * halo * grabW);
         gl_PointSize = mix(sz, aSize, mp);
+        gl_PointSize *= 1.0 + uBurstK * 2.0;
         gl_PointSize *= 1.0 + sin(3.14159 * mp) * 0.22;   // 飞行途中只轻微放大，落位时不炸成光团
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
       uniform float uOpacity; uniform vec3 cA; uniform vec3 cB; uniform vec3 cC;
-      uniform float uPhotoGain; uniform float uTime; uniform float uTwinkle; uniform float uGrabK;
+      uniform float uPhotoGain; uniform float uTime; uniform float uTwinkle; uniform float uGrabK; uniform float uBurstK;
       varying float vShade; varying float vTint; varying float vWarm; varying float vPhoto; varying float vEdge;
       varying vec3 vColor; varying float vSeed; varying float vHeartG; varying float vDust; varying float vDepth; varying float vAlpha;
       void main(){
@@ -364,7 +568,8 @@ function fieldMaterial(){
         vec3 col = mix(mix(cA, cB, vTint), cC, smoothstep(0.75, 1.0, vTint));
         // 抓取 = 霓虹爱心：底部玫瑰、顶部蓝青，双色渐变
         vec3 heartCol = mix(vec3(1.0, 0.28, 0.50), vec3(0.25, 0.72, 1.0), vHeartG);
-        col = mix(col, heartCol, vWarm * 0.95);
+        heartCol = mix(heartCol, vec3(1.0, 0.82, 0.92), uGrabK * 0.06);
+        col = mix(col, heartCol, min(1.0, vWarm * 0.98));
         col = mix(col, vColor, vPhoto);
         // 轮廓、眉眼和唇线用冷白青提亮，暗部保留深蓝体积。
         col = mix(col, vec3(0.56, 0.92, 1.0), vEdge * 0.38);
@@ -374,7 +579,7 @@ function fieldMaterial(){
         // 半路只闪一层蓝光，持续时间短，不会把整张脸洗白。
         float transit = sin(3.14159 * vPhoto);
         col = mix(col, vec3(0.10, 0.46, 1.0), transit * 0.24);
-        float alpha = a * vShade * uOpacity * mix(1.0, 0.92, vWarm);
+        float alpha = a * vShade * uOpacity * mix(1.0, 1.02, vWarm);
         alpha *= mix(1.0, vAlpha, vPhoto);
         alpha *= mix(1.0, 1.0 + vEdge * 0.55, vPhoto);
         alpha *= 1.0 + transit * 0.18;
@@ -384,6 +589,8 @@ function fieldMaterial(){
         // 人像态每颗粒子自己呼吸，整张脸才会"活"起来
         float tw = 1.0 - uTwinkle + uTwinkle * sin(uTime * 2.6 + vSeed * 62.83);
         alpha *= mix(1.0, tw, vPhoto);
+        col = mix(col, vec3(1.0, 0.62, 0.86), uBurstK * 0.45);
+        alpha *= 1.0 + uBurstK * 1.1;
         gl_FragColor = vec4(col, alpha);
       }`,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
@@ -757,6 +964,123 @@ async function loadPortrait(n, mode){
   };
 }
 
+/** 固定种子，保证每次刷新和截图生成同一套形态。 */
+function mulberry32(seed){
+  let a = seed >>> 0;
+  return function(){
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shapeBaseSize(){
+  return PORTRAIT_POINT_SIZE * (renderer ? renderer.getPixelRatio() : 1);
+}
+
+/** 银河：三条对数螺旋臂 + 明亮核心，先做一个固定倾斜角产生深度。 */
+function buildGalaxy(n){
+  const rand = mulberry32(0x9e3779b9);
+  const target = new Float32Array(n * 3);
+  const color = new Float32Array(n * 3);
+  const edge = new Float32Array(n);
+  const size = new Float32Array(n);
+  const alpha = new Float32Array(n);
+  const base = shapeBaseSize();
+  const arms = 3, turns = 2.3, maxR = 5.4;
+  const tiltX = 0.62, yawY = -0.22;
+  const cosX = Math.cos(tiltX), sinX = Math.sin(tiltX);
+  const cosY = Math.cos(yawY), sinY = Math.sin(yawY);
+
+  for (let i = 0; i < n; i++) {
+    const core = i < n * 0.12;
+    const arm = i % arms;
+    const t = core ? Math.pow(rand(), 1.7) : Math.pow(rand(), 0.72);
+    const theta = t * Math.PI * 2 * turns
+      + arm * (Math.PI * 2 / arms)
+      + (rand() - 0.5) * 0.35 * (1 - t);
+    const r = core
+      ? Math.pow(rand(), 0.7) * 1.15
+      : 0.5 + t * maxR * (0.82 + rand() * 0.18);
+    const y0 = (rand() - 0.5) * (core ? 0.55 : 0.25 + r * 0.075);
+    const x0 = Math.cos(theta) * r;
+    const z0 = Math.sin(theta) * r;
+    const y1 = y0 * cosX - z0 * sinX;
+    const z1 = y0 * sinX + z0 * cosX;
+    const x1 = x0 * cosY + z1 * sinY;
+    const z2 = -x0 * sinY + z1 * cosY;
+
+    target[i*3] = x1;
+    target[i*3+1] = y1;
+    target[i*3+2] = z2;
+
+    const u = core ? 0 : clamp((r - 0.9) / maxR, 0, 1);
+    let cr = lerp(1.00, 0.28, u);
+    let cg = lerp(0.82, 0.56, u);
+    let cb = lerp(0.42, 1.00, u);
+    if (!core && i % 9 === 0) { cr = 0.72; cg = 0.36; cb = 1.00; }
+    const g = 0.82 + rand() * 0.18;
+    color[i*3]   = Math.min(1, cr * g);
+    color[i*3+1] = Math.min(1, cg * g);
+    color[i*3+2] = Math.min(1, cb * g);
+    edge[i] = 0;
+    size[i] = base * (core ? 1.10 + rand() * 0.60 : 0.55 + rand() * 0.55);
+    alpha[i] = core ? 1.0 : 0.62 + rand() * 0.38;
+  }
+
+  return { target, color, edge, size, alpha, planeW: 11, planeH: 11, glowCanvas: null, meshPositions: [] };
+}
+
+/** DNA：双螺旋两条链 + 中间横档，局部 3D 坐标。 */
+function buildDNA(n){
+  const rand = mulberry32(0x51ed27);
+  const target = new Float32Array(n * 3);
+  const color = new Float32Array(n * 3);
+  const edge = new Float32Array(n);
+  const size = new Float32Array(n);
+  const alpha = new Float32Array(n);
+  const base = shapeBaseSize();
+  const height = 7.2, radius = 1.55, turns = 3.4;
+  const strandCount = Math.floor(n * 0.72);
+  const tiltZ = 0.12, cosZ = Math.cos(tiltZ), sinZ = Math.sin(tiltZ);
+
+  for (let i = 0; i < n; i++) {
+    const t = rand() * 2 - 1;
+    const y0 = t * height * 0.5;
+    const ang = t * Math.PI * turns;
+    const rung = i >= strandCount;
+    let x0, z0;
+    if (rung) {
+      const s = rand();
+      x0 = lerp(Math.cos(ang) * radius, -Math.cos(ang) * radius, s);
+      z0 = lerp(Math.sin(ang) * radius, -Math.sin(ang) * radius, s);
+    } else {
+      const phase = (i % 2) * Math.PI;
+      x0 = Math.cos(ang + phase) * radius;
+      z0 = Math.sin(ang + phase) * radius;
+    }
+    x0 += (rand() - 0.5) * 0.08;
+    z0 += (rand() - 0.5) * 0.08;
+
+    target[i*3]   = x0 * cosZ - y0 * sinZ;
+    target[i*3+1] = x0 * sinZ + y0 * cosZ;
+    target[i*3+2] = z0;
+
+    let cr, cg, cb;
+    if (rung) { cr = 0.35; cg = 0.55; cb = 0.95; }
+    else if (i % 2) { cr = 1.00; cg = 0.30; cb = 0.72; }
+    else { cr = 0.22; cg = 0.78; cb = 1.00; }
+    color[i*3] = cr; color[i*3+1] = cg; color[i*3+2] = cb;
+    edge[i] = 0;
+    size[i] = base * (rung ? 0.45 + rand() * 0.25 : 0.65 + rand() * 0.45);
+    alpha[i] = rung ? 0.55 : 0.82 + rand() * 0.18;
+  }
+
+  return { target, color, edge, size, alpha, planeW: 4.5, planeH: 7.8, glowCanvas: null, meshPositions: [] };
+}
+
 function buildField(portrait){
   const n = CFG.particles;
   const pos = new Float32Array(n*3), seed = new Float32Array(n), tint = new Float32Array(n);
@@ -785,7 +1109,7 @@ function buildField(portrait){
   return g;
 }
 
-/** 把人像切换成第 idx 套（0=JSON原色，1=照片蓝色调）。 */
+/** 切换到第 idx 个形态（0=JSON人像，1=照片人像，2=银河，3=DNA）。 */
 function swapPortrait(idx){
   const d = portraitSets[idx];
   if (!d || !field) return;
@@ -796,7 +1120,18 @@ function swapPortrait(idx){
   attrs.aSize.array.set(d.size);      attrs.aSize.needsUpdate = true;
   attrs.aAlpha.array.set(d.alpha);    attrs.aAlpha.needsUpdate = true;
   currentPortrait = idx;
-  if (aura) aura.scale.set(d.planeW * 1.35, d.planeH * 1.20, 1);
+  portraitInfo = d;
+  if (aura) {
+    aura.scale.set(d.planeW * 1.35, d.planeH * 1.20, 1);
+    const map = idx === 0 ? genericGlow : idx === 1 ? photoGlow : genericGlow;
+    if (map && aura.material.map !== map) {
+      aura.material.map = map;
+      aura.material.needsUpdate = true;
+    }
+    if (!isPortraitShape(idx)) aura.material.opacity = 0;
+  }
+  // 网格线只属于照片人像，切到 JSON 人像或 3D 形态时必须隐藏。
+  if (portraitMesh) portraitMesh.visible = idx === 1 && portraitMix > 0.015;
 }
 
 /** 手心里那团光的贴图：中心亮核 + 一圈很淡的外环。 */
@@ -836,10 +1171,30 @@ function buildGlow(){
 
 async function buildScene(onStage){
   THREE = await loadThree(onStage);
+  genericGlow = glowTexture();
 
   renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true, alpha: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CFG.dprLimit));
   renderer.setClearColor(0x030916, 1);
+  if (TRAILS_ENABLED) {
+    // 轻量拖尾：先用半透明背景色盖住上一帧，再叠加当前帧。
+    renderer.autoClear = false;
+    renderer.clear();
+    trailScene = new THREE.Scene();
+    trailCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const fade = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      new THREE.MeshBasicMaterial({
+        color: 0x030916, transparent: true, opacity: 0.17,
+        depthTest: false, depthWrite: false
+      })
+    );
+    fade.frustumCulled = false;
+    trailScene.add(fade);
+    trailFadeMat = fade.material;
+  } else {
+    renderer.autoClear = true;
+  }
 
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(62, 1, 0.5, 4000);
@@ -850,22 +1205,72 @@ async function buildScene(onStage){
   catch(e){ console.warn('人像1(JSON)加载失败', e); }
   try { portraitSets[1] = await loadPortrait(CFG.particles, 'photo'); }
   catch(e){ console.warn('人像2(照片)加载失败', e); }
-  portrait = portraitSets[0] || portraitSets[1] || null;
-  currentPortrait = portraitSets[0] ? 0 : 1;
+  onStage('正在生成银河与 DNA…');
+  try { portraitSets[2] = buildGalaxy(CFG.particles); }
+  catch(e){ console.warn('银河生成失败', e); }
+  try { portraitSets[3] = buildDNA(CFG.particles); }
+  catch(e){ console.warn('DNA 生成失败', e); }
+
+  portrait = portraitSets[0] || portraitSets[1] || portraitSets[2] || portraitSets[3] || null;
+  currentPortrait = [0, 1, 2, 3].find(i => !!portraitSets[i]) ?? 0;
   portraitInfo = portrait;
   window.__portraitStats = portrait ? portrait.stats : null;
 
   field = new THREE.Points(buildField(portrait), fieldMaterial());
+  field.geometry.setDrawRange(0, activeParticles);
+  updateHudQuality();
   scene.add(field);
 
   glow = buildGlow();
   scene.add(glow);
+  heartAura = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTexture(), color: 0xff5fa8,
+    transparent: true, opacity: 0,
+    depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending
+  }));
+  heartAura.scale.setScalar(8);
+  heartAura.renderOrder = 4;
+  heartAura.frustumCulled = false;
+  scene.add(heartAura);
+  chargeRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.985, 1.0, 96),
+    new THREE.MeshBasicMaterial({
+      color: 0xff7fbd, transparent: true, opacity: 0,
+      side: THREE.DoubleSide, depthTest: false, depthWrite: false,
+      blending: THREE.AdditiveBlending
+    })
+  );
+  chargeRing.renderOrder = 4;
+  chargeRing.frustumCulled = false;
+  scene.add(chargeRing);
+  burstRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.985, 1.0, 96),
+    new THREE.MeshBasicMaterial({
+      color: 0xffc0e0, transparent: true, opacity: 0,
+      side: THREE.DoubleSide, depthTest: false, depthWrite: false,
+      blending: THREE.AdditiveBlending
+    })
+  );
+  burstRing.renderOrder = 5;
+  burstRing.frustumCulled = false;
+  scene.add(burstRing);
+  burstFlash = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTexture(), color: 0xffd0e8,
+    transparent: true, opacity: 0,
+    depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending
+  }));
+  burstFlash.renderOrder = 5;
+  burstFlash.frustumCulled = false;
+  scene.add(burstFlash);
+
+  if (portraitSets[1] && portraitSets[1].glowCanvas) {
+    photoGlow = new THREE.CanvasTexture(portraitSets[1].glowCanvas);
+    photoGlow.colorSpace = THREE.SRGBColorSpace;
+  }
 
   // 人像背后的蓝色光晕
   aura = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: portrait && portrait.glowCanvas
-      ? (() => { const t = new THREE.CanvasTexture(portrait.glowCanvas); t.colorSpace = THREE.SRGBColorSpace; return t; })()
-      : glowTexture(),
+    map: currentPortrait === 1 && photoGlow ? photoGlow : genericGlow,
     color: 0xffffff, transparent: true, opacity: 0,
     depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending
   }));
@@ -888,6 +1293,14 @@ async function buildScene(onStage){
     scene.add(portraitMesh);
   }
 
+  // 调试用：?shape=0..3 直接落到指定形态，配合 ?morph=1 出截图。
+  if (Number.isFinite(DEBUG_SHAPE) && portraitSets[DEBUG_SHAPE]) {
+    swapPortrait(DEBUG_SHAPE);
+    portraitOn = true;
+    portraitTarget = 1;
+    if (Number.isFinite(DEBUG_MORPH)) portraitMix = DEBUG_MORPH;
+  }
+
   resize();
   window.addEventListener('resize', resize);
   window.addEventListener('orientationchange', ()=> setTimeout(resize, 250));
@@ -906,9 +1319,55 @@ function resize(){
   camera.updateProjectionMatrix();
 }
 
+function updateHudQuality(){
+  if (!hudEl) return;
+  const prefix = DEMO_MODE ? '演示 · ' + demoCaption + ' · ' : '粒子自我 · 手掌即方向 · ';
+  hudEl.textContent = prefix +
+    activeParticles.toLocaleString() + ' 粒子 · ' + (QUALITY_LABEL[qualityLevel] || '');
+}
+
+/** 2 秒平均帧时间超预算就降一档；每档至少停 3 秒，避免来回抖。 */
+function stepQuality(dt){
+  if (!field) return;
+  if (dt <= 0 || dt > 0.2) return;
+  if (qualityCooldown > 0) {
+    qualityCooldown = Math.max(0, qualityCooldown - dt);
+    return;
+  }
+  qualityAccum += dt;
+  qualityFrames++;
+  if (qualityAccum < 2.0) return;
+  const avg = qualityAccum / qualityFrames;
+  qualityAccum = 0;
+  qualityFrames = 0;
+  if (avg <= 0.026) return;
+  let idx = QUALITY_ORDER.indexOf(qualityLevel);
+  if (idx < 0) {
+    if (CFG.particles > QUALITY.mid) idx = QUALITY_ORDER.indexOf('high');
+    else if (CFG.particles > QUALITY.low) idx = QUALITY_ORDER.indexOf('mid');
+    else idx = QUALITY_ORDER.indexOf('low');
+  }
+  if (idx <= 0) return;
+  qualityLevel = QUALITY_ORDER[idx - 1];
+  activeParticles = Math.min(CFG.particles, QUALITY[qualityLevel]);
+  field.geometry.setDrawRange(0, activeParticles);
+  qualityCooldown = 3.0;
+  updateHudQuality();
+  console.info('auto quality ->', qualityLevel, activeParticles);
+}
+
 function applyCamera(dt, elapsed){
   if (!renderer) return;
-  const r = CFG.orbitBase + view.dist * CFG.orbitGain;
+  // 甩动惯性：只在检测帧之外也继续推进，手停下后还会滑一小段。
+  if (coasting) {
+    view.yaw += coasting.yaw * dt;
+    view.pitch = clamp(view.pitch + coasting.pitch * dt, -CFG.pitchLimit, CFG.pitchLimit);
+    const k = Math.exp(-dt / CFG.flickTau);
+    coasting.yaw *= k;
+    coasting.pitch *= k;
+    if (Math.hypot(coasting.yaw, coasting.pitch) < CFG.flickMin) coasting = null;
+  }
+  const r = CFG.orbitBase + view.dist * CFG.orbitGain + burstKick;
   const yaw = view.yaw * Math.PI/180;
   const pitch = clamp(view.pitch, -CFG.pitchLimit, CFG.pitchLimit) * Math.PI/180;
   camera.position.set(
@@ -922,12 +1381,48 @@ function applyCamera(dt, elapsed){
   camera.lookAt(0,0,0);
   camera.updateMatrixWorld();
 
-  // 抓取：捏下时计时器开始跑，粒子按"由近到远"的顺序被吸进手心；
-  // 松开后强度回落，计时器等回弹结束再归零。
-  grabMix = smoothTo(grabMix, grabTarget, grabTarget > 0 ? 16 : 8, dt);
-  if (grabTarget > 0) grabT = Math.min(grabT + dt, 3.0);
+  // 爱心状态机：捏住蓄力，松手 300ms 后爆炸；窗口内再捏一次则锁定。
+  const nowMs = elapsed * 1000;
+  if (DEBUG_GRAB_HOLD) {
+    heartCharge = 1;
+    grabTarget = 1;
+  } else if (DEBUG_GRAB) {
+    heartCharge = 1;
+    grabTarget = 1;
+  } else if (pinchOverride != null) {
+    heartCharge = pinchOverride;
+    grabTarget = pinchOverride;
+  } else if (Number.isFinite(DEBUG_PINCH) && !portraitOn) {
+    heartCharge = clamp(DEBUG_PINCH, 0, 1);
+    grabTarget = heartCharge;
+  } else if (portraitOn) {
+    grabTarget = 0;
+  } else if (heartLocked) {
+    heartCharge = lockedCharge;
+    grabTarget = lockedCharge;
+  } else if (pendingBurstAt) {
+    if (nowMs >= pendingBurstAt) {
+      triggerBurst();
+      grabTarget = 0;
+    } else {
+      grabTarget = heartCharge;
+    }
+  } else if (grabHeld) {
+    heartCharge = Math.min(1, heartCharge + dt / CFG.pinchChargeSec);
+    grabTarget = Math.max(0.18, lastPinch01 * 0.35, heartCharge);
+  } else {
+    grabTarget = 0;
+    if (grabMix < 0.02) heartCharge = 0;
+  }
+
+  grabMix = smoothTo(grabMix, grabTarget, grabTarget > grabMix ? 14 : 8, dt);
+  if (grabTarget > 0.01) grabT = Math.min(grabT + dt, 3.0);
   else if (grabMix < 0.02) grabT = 0;
   if (DEBUG_GRAB_HOLD) { grabMix = 1; grabT = 3; }
+  burstK *= Math.exp(-dt / 0.5);
+  if (burstK < 0.001) burstK = 0;
+  burstKick *= Math.exp(-dt / 0.4);
+  if (burstKick < 0.001) burstKick = 0;
 
   const fu = field.material.uniforms;
   fu.uGrabAxis.value.copy(dir);
@@ -935,26 +1430,77 @@ function applyCamera(dt, elapsed){
   const grUp = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
   fu.uGrabRight.value.copy(grRight);
   fu.uGrabUp.value.copy(grUp);
-  // 爱心跟手：把捏合点从图像坐标换算成相机前方的一个偏移
-  const ndcX = (pinchPoint.x - 0.5) * 2;
-  const ndcY = (0.5 - pinchPoint.y) * 2;
-  const halfH = CFG.grabAhead * Math.tan(31 * Math.PI / 180);
-  const halfW = halfH * camera.aspect;
-  const grabPoint = camera.position.clone()
-    .addScaledVector(dir, CFG.grabAhead)
-    .addScaledVector(grRight, ndcX * halfW)
-    .addScaledVector(grUp, ndcY * halfH);
-  fu.uGrab.value.copy(grabPoint);
+  palmStrength = smoothTo(palmStrength, palmTarget, palmTarget > palmStrength ? 12 : 8, dt);
+  const palmNdcX = (palmPoint.x - 0.5) * 2;
+  const palmNdcY = (0.5 - palmPoint.y) * 2;
+  const palmHalfH = CFG.palmAhead * Math.tan(31 * Math.PI / 180);
+  const palmHalfW = palmHalfH * camera.aspect;
+  fu.uPalm.value.copy(camera.position)
+    .addScaledVector(dir, CFG.palmAhead)
+    .addScaledVector(grRight, palmNdcX * palmHalfW)
+    .addScaledVector(grUp, palmNdcY * palmHalfH);
+  fu.uPalmK.value = palmStrength;
+  fu.uPalmR.value = CFG.palmRadius;
+  // 爱心贴在掌心：用掌心位置投影到相机前方；锁定且手离开时保留最后位置。
+  if (palmPresent || !heartLocked) {
+    const ndcX = (heartPoint.x - 0.5) * 2;
+    const ndcY = (0.5 - heartPoint.y) * 2;
+    const halfH = CFG.grabAhead * Math.tan(31 * Math.PI / 180);
+    const halfW = halfH * camera.aspect;
+    fu.uGrab.value.copy(camera.position)
+      .addScaledVector(dir, CFG.grabAhead)
+      .addScaledVector(grRight, ndcX * halfW)
+      .addScaledVector(grUp, ndcY * halfH);
+  }
+  const grabPoint = fu.uGrab.value;
   fu.uGrabK.value = grabMix;
+  const formT = clamp((grabMix - 0.02) / 0.28, 0, 1);
+  fu.uGrabForm.value = formT * formT * (3 - 2 * formT);
   fu.uGrabT.value = grabT;
-  fu.uGrabR.value = CFG.grabRadius;
+  fu.uGrabR.value = CFG.grabRadius + 6 * clamp(heartCharge, 0, 1);
+  fu.uBurstK.value = burstK;
   fu.uTime.value = elapsed;
 
   if (glow) {
     glow.position.copy(grabPoint);
-    glow.scale.setScalar(3.0 + 1.6 * grabMix);
-    glow.material.opacity = grabMix * 0.45;
-    glow.material.color.setRGB(1.0, 0.30 + 0.18 * grabMix, 0.46 + 0.20 * grabMix);
+    glow.scale.setScalar(3.0 + 1.2 * grabMix);
+    glow.material.opacity = 0.08 + grabMix * 0.20;
+    glow.material.color.setRGB(1.0, 0.30 + 0.22 * grabMix, 0.48 + 0.24 * grabMix);
+  }
+  if (heartAura) {
+    heartAura.position.copy(grabPoint);
+    heartAura.scale.setScalar(6.0 + 2.0 * grabMix);
+    heartAura.material.opacity = grabMix * 0.05;
+    heartAura.material.color.setRGB(1.0, 0.32 + 0.20 * grabMix, 0.56 + 0.18 * grabMix);
+  }
+  if (chargeRing) {
+    chargeRing.position.copy(grabPoint);
+    chargeRing.quaternion.copy(camera.quaternion);
+    chargeRing.rotateZ(elapsed * (0.4 + heartCharge * 1.4));
+    chargeRing.scale.setScalar(1.6 + 0.8 * clamp(heartCharge, 0, 1));
+    chargeRing.material.opacity = grabMix * 0.28;
+    chargeRing.material.color.setRGB(1.0, 0.45 + 0.20 * grabMix, 0.75 + 0.15 * grabMix);
+  }
+  if (burstRing && burstFlash) {
+    if (burstFxT < BURST_FX_LIFE) {
+      const t = clamp(burstFxT / BURST_FX_LIFE, 0, 1);
+      const e = 1 - Math.pow(1 - t, 3);
+      burstRing.position.copy(grabPoint);
+      burstRing.quaternion.copy(camera.quaternion);
+      burstRing.scale.setScalar(0.8 + 2.2 * e);
+      burstRing.material.opacity = (1 - t) * 0.75;
+      burstRing.material.color.setRGB(1.0, 0.65 + 0.25 * t, 0.85 + 0.10 * t);
+      burstFlash.position.copy(grabPoint);
+      burstFlash.scale.setScalar(1.2 + 2.2 * e);
+      burstFlash.material.opacity = (1 - t) * 0.85;
+    } else {
+      burstRing.material.opacity = 0;
+      burstFlash.material.opacity = 0;
+    }
+    burstFxT += dt;
+  }
+  if (trailFadeMat) {
+    trailFadeMat.opacity = clamp(0.22 - 0.06 * grabMix, 0.14, 0.22);
   }
 
   // 人像：粒子按自己的节奏飞过去，最后全靠粒子自己堆出五官
@@ -984,15 +1530,22 @@ function applyCamera(dt, elapsed){
     portraitMesh.quaternion.copy(camera.quaternion);
     portraitMesh.rotateY(fu.uHeadTurn.value);
     portraitMesh.rotateX(fu.uHeadTilt.value);
-    portraitMesh.visible = portraitMix > 0.015;
+    portraitMesh.visible = currentPortrait === 1 && portraitMix > 0.015;
     portraitMesh.material.opacity = Math.pow(clamp(portraitMix, 0, 1), 2) * 0.06;
   }
   if (aura) {
     aura.position.copy(camera.position).addScaledVector(fwd, PORTRAIT.ahead + 0.55);
     if (portraitInfo) aura.scale.set(portraitInfo.planeW * 1.35, portraitInfo.planeH * 1.20, 1);
-    aura.material.opacity = portraitMix * 0.08;
+    aura.material.opacity = isPortraitShape(currentPortrait) ? portraitMix * 0.08 : 0;
   }
-  renderer.render(scene, camera);
+  if (TRAILS_ENABLED && trailScene && trailCamera) {
+    renderer.autoClear = false;
+    renderer.render(trailScene, trailCamera);
+    renderer.render(scene, camera);
+  } else {
+    renderer.autoClear = true;
+    renderer.render(scene, camera);
+  }
 }
 
 /* ---------------------------- 手势状态机 ------------------------------ */
@@ -1007,9 +1560,66 @@ const setLabel = (text, color='#4a9dff')=>{
   ui.dot.style.animation = color === '#4a9dff' ? 'blink 1.1s infinite' : 'none';
 };
 
+const calBtn = document.getElementById('calibrate');
+const calResetBtn = document.getElementById('cal-reset');
+const calInfoEl = document.getElementById('cal-info');
+let calState = { active: false, phase: 'open', phaseStart: 0, max: -Infinity, min: Infinity };
+
+function updateCalInfo(){
+  if (!calInfoEl) return;
+  calInfoEl.textContent = (pinchCal.calibrated ? '已标定 ' : '默认 ') +
+    pinchCal.lo.toFixed(2) + '–' + pinchCal.hi.toFixed(2);
+}
+
+function startCalibration(){
+  calState = { active: true, phase: 'open', phaseStart: 0, max: -Infinity, min: Infinity };
+  grabTarget = 0;
+  grabHeld = false;
+  pinchOverride = null;
+  calBtn.textContent = '取消标定';
+  setLabel('标定：先张开手掌', '#ffd166');
+}
+
+function finishCalibration(){
+  const lo = calState.min;
+  const hi = calState.max;
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi - lo < 0.25) {
+    setLabel('标定失败：范围太小', '#ff8b8b');
+  } else {
+    pinchCal = { lo, hi, calibrated: true };
+    try { localStorage.setItem(PINCH_CAL_KEY, JSON.stringify({ lo, hi })); } catch(_) {}
+    setLabel('标定完成', '#37e08a');
+  }
+  calState.active = false;
+  calBtn.textContent = '重新标定';
+  updateCalInfo();
+}
+
+calBtn.addEventListener('click', () => {
+  if (calState.active) {
+    calState.active = false;
+    calBtn.textContent = '标定捏合';
+    setLabel('已取消标定', '#7a9dff');
+    return;
+  }
+  startCalibration();
+});
+
+calResetBtn.addEventListener('click', () => {
+  pinchCal = { lo: CFG.pinchShut, hi: CFG.pinchOpen, calibrated: false };
+  try { localStorage.removeItem(PINCH_CAL_KEY); } catch(_) {}
+  calState.active = false;
+  calBtn.textContent = '标定捏合';
+  updateCalInfo();
+  setLabel('已恢复默认捏合范围', '#7a9dff');
+});
+
+updateCalInfo();
+if (pinchCal.calibrated) calBtn.textContent = '重新标定';
+
 let lostCount = 0;
 let twoHandFrames = 0, singleFrames = 0, twoHand = false;
-let oneSince = 0, twoSince = 0, lostAt = 0;
+let pendingShape = -1, pendingSince = 0, lostAt = 0;
 let portraitCooldownUntil = 0;
 let portraitOn = false;
 let moveBuf = [];
@@ -1022,15 +1632,120 @@ function oneEuro(state, x, dt){
   return state.v;
 }
 
+function triggerBurst(){
+  const power = Math.max(heartCharge, lockedCharge, 0.3);
+  burstK = Math.max(burstK, clamp(power, 0.3, 1.0));
+  burstKick = 0.6;
+  burstFxT = 0;
+  if (burstFlashEl) {
+    burstFlashEl.style.transition = 'none';
+    burstFlashEl.style.opacity = '0.85';
+    requestAnimationFrame(() => {
+      burstFlashEl.style.transition = 'opacity .35s ease-out';
+      burstFlashEl.style.opacity = '0';
+    });
+  }
+  grabTarget = 0;
+  heartCharge = 0;
+  lockedCharge = 0;
+  heartLocked = false;
+  pendingBurstAt = 0;
+  lastPinchReleaseAt = 0;
+  lastPinchReleaseCharge = 0;
+}
+
+function onPinchEnter(now){
+  if (now < heartCooldownUntil) return;
+  // 松手后 300ms 内再捏：取消引爆，锁定/解锁。
+  if (now - lastPinchReleaseAt < CFG.pinchDoubleMs && lastPinchReleaseCharge > 0.2) {
+    if (heartLocked) {
+      const charge = Math.max(lockedCharge, 0.6);
+      heartCharge = charge;
+      triggerBurst();
+      heartCooldownUntil = now + 350;
+      waitPinchRelease = true;
+      grabHeld = false;
+    } else {
+      heartLocked = true;
+      lockedCharge = Math.max(lastPinchReleaseCharge, 0.6);
+      heartCharge = lockedCharge;
+      pendingBurstAt = 0;
+    }
+    lastPinchReleaseAt = 0;
+    return;
+  }
+  if (heartLocked) return;
+  heartCharge = Math.max(heartCharge, lastPinch01 * 0.2);
+}
+
+function onPinchRelease(now){
+  lastPinchReleaseAt = now;
+  lastPinchReleaseCharge = heartLocked ? lockedCharge : heartCharge;
+  if (heartLocked) return;
+  if (heartCharge > 0.02) {
+    pendingBurstAt = now + CFG.pinchBurstDelayMs;
+  } else {
+    pendingBurstAt = 0;
+    heartCharge = 0;
+  }
+}
+
 /** 每帧喂一次手部结果，返回本帧的控制意图。 */
 function stepHands(hands, now, dt){
   const hasHand = hands.length > 0;
 
+  // 标定模式：先张开 2 秒，再捏紧 2 秒，记录个人范围。
+  if (calState.active) {
+    if (!hasHand) {
+      calState.phaseStart = 0;
+      setLabel('标定：把手放进画面', '#ffd166');
+      return;
+    }
+    const cf = fingers(hands[0]);
+    if (!calState.phaseStart) calState.phaseStart = now;
+    const elapsed = now - calState.phaseStart;
+    if (calState.phase === 'open') {
+      calState.max = Math.max(calState.max, cf.pinch);
+      if (elapsed >= 2000) {
+        calState.phase = 'close';
+        calState.phaseStart = now;
+        calState.min = Infinity;
+        setLabel('标定：现在捏紧', '#ffd166');
+      } else {
+        setLabel('标定：保持张开 ' + Math.ceil((2000 - elapsed) / 1000) + 's', '#ffd166');
+      }
+    } else {
+      calState.min = Math.min(calState.min, cf.pinch);
+      if (elapsed >= 2000) {
+        finishCalibration();
+      } else {
+        setLabel('标定：保持捏紧 ' + Math.ceil((2000 - elapsed) / 1000) + 's', '#ffd166');
+      }
+    }
+    return;
+  }
+
   if (!hasHand) {
     lostCount++;
-    if (lostCount === CFG.lostFrames) { prevPalm = null; moveBuf = []; }
-    grabTarget = DEBUG_GRAB ? 1 : 0;
+    if (lostCount === CFG.lostFrames) {
+      prevPalm = null;
+      moveBuf = [];
+      awaitingReacquire = true;
+      gainRamp = 0;
+      flick.length = 0;
+      coasting = null;
+    }
+    const debugPinch = Number.isFinite(DEBUG_PINCH) && !portraitOn
+      ? clamp(DEBUG_PINCH, 0, 1) : null;
     grabHeld = false;
+    palmPresent = false;
+    if (!heartLocked) {
+      heartCharge = 0;
+      pendingBurstAt = 0;
+      waitPinchRelease = false;
+    }
+    palmTarget = 0;
+    pendingShape = -1; pendingSince = 0;
     pinchPoint.x = 0.5; pinchPoint.y = 0.5;
     if (portraitOn) {
       if (!lostAt) lostAt = now;
@@ -1039,20 +1754,55 @@ function stepHands(hands, now, dt){
         portraitTarget = 0;
         portraitCooldownUntil = now + 900;
       }
-      setLabel(portraitOn ? '人像 · 手回到画面' : '未检测到手', portraitOn ? '#c9b3ff' : '#4a9dff');
+      const label = (SHAPES[currentPortrait] && SHAPES[currentPortrait].label) || '形态';
+      setLabel(portraitOn ? label + ' · 手回到画面' : '未检测到手', portraitOn ? '#c9b3ff' : '#4a9dff');
     } else {
       setLabel('未检测到手', '#4a9dff');
     }
+    if (debugPinch != null) setLabel('调试捏合 ' + Math.round(debugPinch * 100) + '%', '#ffd166');
     return;
   }
   lostCount = 0;
   lostAt = 0;
+
+  // 手回来第一帧只重建基准，不把这一帧的位移当成拖拽。
+  if (awaitingReacquire) {
+    prevPalm = palm(hands[0]);
+    moveBuf = [];
+    flick.length = 0;
+    coasting = null;
+    gainRamp = 0;
+    awaitingReacquire = false;
+    stepHands.lastCount = hands.length;
+    stepHands.gapBase = null;
+    filterPalmX.v = null;
+    filterPalmY.v = null;
+    filterPinchX.v = null;
+    filterPinchY.v = null;
+    filterHeartX.v = null;
+    filterHeartY.v = null;
+    grabHeld = false;
+    palmPresent = true;
+    if (!heartLocked) {
+      heartCharge = 0;
+      pendingBurstAt = 0;
+    }
+    waitPinchRelease = true;
+    palmTarget = 0;
+    setLabel('重新捕获', '#37e08a');
+    return;
+  }
 
   const main = hands[0];
   const p = palm(main);
   const f = fingers(main);
   pinchPoint.x = oneEuro(filterPinchX, (main[4].x + main[8].x) / 2, dt);
   pinchPoint.y = oneEuro(filterPinchY, (main[4].y + main[8].y) / 2, dt);
+  palmPoint.x = oneEuro(filterPalmCenterX, (main[0].x + main[9].x) / 2, dt);
+  palmPoint.y = oneEuro(filterPalmCenterY, (main[0].y + main[9].y) / 2, dt);
+  palmPresent = true;
+  heartPoint.x = oneEuro(filterHeartX, palmPoint.x + (main[12].x - palmPoint.x) * 0.15, dt);
+  heartPoint.y = oneEuro(filterHeartY, palmPoint.y + (main[12].y - palmPoint.y) * 0.15, dt);
 
   // 手数变化时重建基准：(1) 手序可能翻转 (2) 换手后位移会突然很大
   if (hands.length !== stepHands.lastCount) {
@@ -1060,7 +1810,8 @@ function stepHands(hands, now, dt){
     prevPalm = null;
     moveBuf = [];
   }
-  if (!prevPalm) { prevPalm = p; setLabel('开始跟踪', '#37e08a'); return; }
+  if (!prevPalm) { prevPalm = p; gainRamp = 1; setLabel('开始跟踪', '#37e08a'); return; }
+  gainRamp = Math.min(1, gainRamp + dt / CFG.reacquireSec);
 
   const dxPx = (p.x - prevPalm.x) * stage.clientWidth;
   const dyPx = (p.y - prevPalm.y) * stage.clientHeight;
@@ -1083,7 +1834,12 @@ function stepHands(hands, now, dt){
     // 两手分开 = 后退，合拢 = 前进
     view.dist = clamp(view.dist * (stepHands.gapBase / Math.max(gap, 1)), CFG.distMin, CFG.distMax);
     if (stepHands.gapBase) stepHands.gapBase = lerp(stepHands.gapBase, gap, 0.05);
-    grabTarget = 0;
+    palmPresent = true;
+    grabHeld = false;
+    if (!heartLocked) { heartCharge = 0; pendingBurstAt = 0; }
+    palmTarget = 0;
+    coasting = null; flick.length = 0;
+    pendingShape = -1; pendingSince = 0;
     setLabel('双手推进', '#7a9dff');
     prevPalm = p;
     return;
@@ -1096,58 +1852,125 @@ function stepHands(hands, now, dt){
   const n = moveBuf.length/2 || 1;
   const still = Math.hypot(sx/n, sy/n) <= CFG.stillPx;
 
-  // 比 1 = JSON 原色人像；比 2 = 照片蓝色调人像。
-  // 都是"伸直对应手指 + 拇指内收 + 停住一会儿"。
+  // 比 1/2/3 或小指 = 人像1 / 人像2 / 银河 / DNA。
+  // 四条门控：对应手指伸直、拇指内收、手基本静止、保持一会儿。
   const isOne = f.index && !f.middle && !f.ring && !f.pinky && f.thumbIn;
   const isTwo = f.index && f.middle && !f.ring && !f.pinky && f.thumbIn;
+  const isThree = f.index && f.middle && f.ring && !f.pinky && f.thumbIn;
+  // 4 指和张开手掌太像，DNA 改用“小指单独伸出”，避免掌一开就误切。
+  const isPinky = !f.index && !f.middle && !f.ring && f.pinky && f.thumbIn;
+  const poseIndex = isOne ? 0 : isTwo ? 1 : isThree ? 2 : isPinky ? 3 : -1;
+  const poseReady = poseIndex >= 0 && !!portraitSets[poseIndex] && still;
+
   if (!portraitOn && switchQueue == null) {
-    if (isOne && still) { if (!oneSince) oneSince = now; } else oneSince = 0;
-    if (isTwo && still) { if (!twoSince) twoSince = now; } else twoSince = 0;
-    if (oneSince && now - oneSince >= CFG.portraitHoldMs && now >= portraitCooldownUntil) {
-      swapPortrait(0);
-      portraitOn = true;
-      portraitTarget = 1;
-      oneSince = 0; twoSince = 0;
-    } else if (twoSince && now - twoSince >= CFG.portraitHoldMs && now >= portraitCooldownUntil) {
-      swapPortrait(1);
-      portraitOn = true;
-      portraitTarget = 1;
-      oneSince = 0; twoSince = 0;
+    if (poseReady) {
+      if (pendingShape !== poseIndex) { pendingShape = poseIndex; pendingSince = now; }
+      if (now - pendingSince >= CFG.portraitHoldMs && now >= portraitCooldownUntil) {
+        heartLocked = false; heartCharge = 0; pendingBurstAt = 0;
+        coasting = null; flick.length = 0;
+        swapPortrait(poseIndex);
+        portraitOn = true;
+        portraitTarget = 1;
+        portraitCooldownUntil = now + 900;
+        pendingShape = -1; pendingSince = 0;
+      }
+    } else {
+      pendingShape = -1; pendingSince = 0;
+    }
+  } else if (portraitOn && switchQueue == null) {
+    // 已有形态时，比另一个数字也要停住一会儿，先散开再换数据。
+    if (poseReady && poseIndex !== currentPortrait) {
+      if (pendingShape !== poseIndex) { pendingShape = poseIndex; pendingSince = now; }
+      if (now - pendingSince >= CFG.portraitHoldMs && now >= portraitCooldownUntil) {
+        heartLocked = false; heartCharge = 0; pendingBurstAt = 0;
+        coasting = null; flick.length = 0;
+        switchQueue = poseIndex;
+        portraitOn = false;
+        portraitTarget = 0;
+        portraitCooldownUntil = now + 900;
+        pendingShape = -1; pendingSince = 0;
+      }
+    } else {
+      pendingShape = -1; pendingSince = 0;
     }
   } else {
-    oneSince = 0; twoSince = 0;
-    // 已有人像时比另一个数字：先散开，再聚成对应的人像
-    if (portraitOn && switchQueue == null && still) {
-      if (isTwo && currentPortrait !== 1) { switchQueue = 1; portraitOn = false; portraitTarget = 0; }
-      else if (isOne && currentPortrait !== 0) { switchQueue = 0; portraitOn = false; portraitTarget = 0; }
-    }
+    pendingShape = -1; pendingSince = 0;
   }
 
   // 手掌平移 = 朝向。用增量累加，手停住就停。
-  const gx = oneEuro(filterPalmX, p.x, dt);
-  const gy = oneEuro(filterPalmY, p.y, dt);
   const gain = f.scale || 1;
   const turn = portraitOn ? 0.3 : 1;   // 人像出来时手还在动，减一点转速，人像才稳
-  if (Math.hypot(dxPx, dyPx) > CFG.deadzonePx) {
-    view.yaw -= (dxPx / (gain*stage.clientWidth)) * CFG.yawGain * turn;
-    view.pitch = clamp(view.pitch + (dyPx / (gain*stage.clientWidth)) * CFG.pitchGain * turn,
-                       -CFG.pitchLimit, CFG.pitchLimit);
-    yawVel = (dxPx / (gain*stage.clientWidth)) * CFG.yawGain / Math.max(dt, 1/120);
-    pitchVel = (dyPx / (gain*stage.clientWidth)) * CFG.pitchGain / Math.max(dt, 1/120);
+  const moved = Math.hypot(dxPx, dyPx) > CFG.deadzonePx;
+  if (moved) {
+    const dYaw = -(dxPx / (gain*stage.clientWidth)) * CFG.yawGain * turn * gainRamp;
+    const dPitch = (dyPx / (gain*stage.clientWidth)) * CFG.pitchGain * turn * gainRamp;
+    view.yaw += dYaw;
+    view.pitch = clamp(view.pitch + dPitch, -CFG.pitchLimit, CFG.pitchLimit);
+    yawVel = dYaw / Math.max(dt, 1/120);
+    pitchVel = dPitch / Math.max(dt, 1/120);
+    coasting = null;
+    if (gainRamp > 0.5) {
+      flick.push({ yaw: dYaw, pitch: dPitch, dt });
+      if (flick.length > CFG.flickWindow) flick.shift();
+    }
+  } else if (!coasting && flick.length >= 3) {
+    // 手停住：看最近几帧的平均角速度，快划才滑行，慢停直接停。
+    let sy = 0, sp = 0, sd = 0;
+    for (const s of flick) { sy += s.yaw; sp += s.pitch; sd += s.dt; }
+    const vy = sy / Math.max(sd, 1e-4);
+    const vp = sp / Math.max(sd, 1e-4);
+    if (Math.hypot(vy, vp) > CFG.flickMin) coasting = { yaw: vy, pitch: vp };
+    flick.length = 0;
   }
 
   // 捏合 = 抓取。指距比越小捏得越紧。
-  const pinch = clamp((CFG.pinchOpen - f.pinch) / (CFG.pinchOpen - CFG.pinchShut), 0, 1);
-  if (!grabHeld && pinch > 0.62) grabHeld = true;
-  else if (grabHeld && pinch < 0.36) grabHeld = false;
-  grabTarget = portraitOn ? 0 : (grabHeld ? 1 : 0);
-  if (DEBUG_GRAB) grabTarget = 1;      // 调试用：?grab=1 强制抓取，方便无手时看效果
+  const calHi = pinchCal.hi, calLo = pinchCal.lo;
+  let pinch01 = clamp((calHi - f.pinch) / Math.max(0.05, calHi - calLo), 0, 1);
+  if (pinch01 < 0.05) pinch01 = 0;
+  if (!portraitOn && Number.isFinite(DEBUG_PINCH)) pinch01 = clamp(DEBUG_PINCH, 0, 1);
+  if (pinch01 > 0.05) { coasting = null; flick.length = 0; }
+  lastPinch01 = pinch01;
+  const wasHeld = grabHeld;
+  if (waitPinchRelease) {
+    if (pinch01 < 0.30) waitPinchRelease = false;
+  } else if (!grabHeld && pinch01 > 0.45 && now >= heartCooldownUntil) {
+    grabHeld = true;
+  } else if (grabHeld && pinch01 < 0.30) {
+    grabHeld = false;
+  }
+  if (!wasHeld && grabHeld) {
+    // 形态态捏合也生效：先把形态散回星云，再让爱心接手。
+    if (portraitOn) {
+      portraitOn = false;
+      portraitTarget = 0;
+      switchQueue = null;
+      pendingShape = -1; pendingSince = 0;
+      portraitCooldownUntil = now + 600;
+    }
+    onPinchEnter(now);
+  } else if (wasHeld && !grabHeld) {
+    onPinchRelease(now);
+  }
 
-  if (portraitOn) setLabel(currentPortrait === 1 ? '人像2 · 放下手散开' : '人像1 · 放下手散开', '#c9b3ff');
+  // 手越快地划过，力场越强；形态态和捏合态都收一点，避免破坏主体。
+  const speed = Math.hypot(dxPx, dyPx) / Math.max(dt, 1 / 120);
+  const speed01 = clamp(speed / 2200, 0, 1);
+  palmTarget = clamp(
+    (0.48 + 0.78 * speed01) *
+    (portraitOn ? 0.38 : 1) *
+    (pinch01 > 0.05 ? 0.55 : 1),
+    0, 1.2
+  );
+
+  const shapeLabel = (SHAPES[currentPortrait] && SHAPES[currentPortrait].label) || '形态';
+  if (portraitOn) setLabel(shapeLabel + ' · 放下手散开', '#c9b3ff');
   else if (switchQueue != null) setLabel('切换中…', '#c9b3ff');
-  else if (twoSince) setLabel('保持比 2…', '#7a9dff');
-  else if (oneSince) setLabel('保持比 1…', '#c9b3ff');
-  else if (grabTarget > 0.5) setLabel('抓取中', '#ffd166');
+  else if (pendingShape >= 0) setLabel('保持比 ' + (pendingShape + 1) + '…', '#7a9dff');
+  else if (heartLocked) setLabel('爱心已锁定', '#ffd166');
+  else if (burstFxT < BURST_FX_LIFE) setLabel('爆炸', '#ff8b8b');
+  else if (pendingBurstAt) setLabel('准备引爆…', '#ffd166');
+  else if (grabHeld) setLabel('蓄力 ' + Math.round(heartCharge * 100) + '%', '#ffd166');
+  else if (grabMix > 0.05) setLabel('散开中', '#ffd166');
   else setLabel('穿行中', '#37e08a');
   prevPalm = p;
 }
@@ -1194,6 +2017,8 @@ function loop(now){
   const dt = loop.last ? Math.min(0.05, (now-loop.last)/1000) : 1/60;
   loop.last = now;
 
+  if (!DEBUG_QUALITY_LOCK) stepQuality(dt);
+
   if (running && landmarker && video.readyState >= 2 && video.videoWidth &&
       now - lastDetect >= 33 && video.currentTime !== lastTime) {
     lastDetect = now;
@@ -1203,7 +2028,9 @@ function loop(now){
     catch(_) { hands = []; }
     stepHands(hands, now, dt);
     drawCamera(hands);
-    if (!hands.length && !DEBUG_GRAB) { grabTarget = 0; }
+    if (!hands.length && !DEBUG_GRAB && pinchOverride == null && !Number.isFinite(DEBUG_PINCH)) {
+      grabTarget = 0;
+    }
   }
 
   applyCamera(dt, now/1000);
@@ -1216,6 +2043,9 @@ const msgEl = document.getElementById('msg');
 const fillEl = document.getElementById('fill');
 const goBtn = document.getElementById('go');
 const errEl = document.getElementById('err');
+const demoBtn = document.getElementById('demo-btn');
+const demoNow = document.getElementById('demo-now');
+const burstFlashEl = document.getElementById('burst-flash');
 
 async function openCache(){
   try { return typeof caches === 'undefined' ? null : await caches.open(MODEL_CACHE); }
@@ -1295,10 +2125,90 @@ async function startCamera(){
   await new Promise(r => video.videoWidth ? r() : video.addEventListener('loadeddata', r, { once: true }));
 }
 
+let demoStarted = false;
+
+async function startDemo(){
+  if (demoStarted) return;
+  demoStarted = true;
+  if (video.srcObject) {
+    try { video.srcObject.getTracks().forEach(t => t.stop()); } catch(_) {}
+    video.srcObject = null;
+  }
+  running = false;
+  document.body.classList.add('demo');
+  boot.classList.add('off');
+  setLabel('演示模式', '#7a9dff');
+  await wait(800);
+  demoLoop();
+}
+
+function demoSetCaption(text){
+  demoCaption = text;
+  updateHudQuality();
+}
+
+async function demoShowShape(idx, holdMs = 3200){
+  const label = (SHAPES[idx] && SHAPES[idx].label) || '形态';
+  if (currentPortrait !== idx) {
+    demoSetCaption('过渡');
+    portraitOn = false;
+    portraitTarget = 0;
+    await wait(1200);          // 先散开，再换属性，避免硬切
+    swapPortrait(idx);
+  }
+  demoSetCaption(label);
+  portraitOn = true;
+  portraitTarget = 1;
+  setLabel('演示 · ' + label, '#c9b3ff');
+  await wait(holdMs);
+}
+
+async function demoLoop(){
+  await wait(1200);
+  while (true) {
+    for (const idx of [0, 1, 2, 3]) await demoShowShape(idx, 3200);
+
+    // 回到星云，演示一次蓄力 → 爆炸
+    portraitOn = false;
+    portraitTarget = 0;
+    heartLocked = false;
+    lockedCharge = 0;
+    heartCharge = 0;
+    pendingBurstAt = 0;
+    pinchOverride = null;
+    demoSetCaption('星云');
+    setLabel('演示 · 星云', '#c9b3ff');
+    await wait(1400);
+
+    grabHeld = true;
+    for (let i = 0; i <= 45; i++) {
+      heartCharge = Math.max(heartCharge, i / 45);
+      demoSetCaption('蓄力 ' + Math.round(i / 45 * 100) + '%');
+      await wait(60);
+    }
+    await wait(300);
+    grabHeld = false;
+    onPinchRelease(performance.now());
+    demoSetCaption('松手 · 爆炸');
+    await wait(900);
+    heartCharge = 0;
+    pendingBurstAt = 0;
+    grabTarget = 0;
+    demoSetCaption('星云');
+    await wait(1400);
+  }
+}
+
 async function boot0(){
   msgEl.textContent = '正在构建粒子场…';
   try { await buildScene(t => { msgEl.textContent = t; }); }
   catch(e){ msgEl.textContent = '3D 初始化失败'; errEl.textContent = String(e.message||e); return; }
+
+  if (DEMO_MODE) {
+    requestAnimationFrame(loop);
+    startDemo();
+    return;
+  }
 
   msgEl.textContent = '正在准备手部识别…';
   let lastPaint = 0;
@@ -1316,7 +2226,7 @@ async function boot0(){
     landmarker = await createLandmarker(buf);
     msgEl.textContent = '就绪。点击开始，浏览器会请求摄像头权限。';
     goBtn.disabled = false;
-    goBtn.textContent = '开始';
+    goBtn.textContent = '开启摄像头';
   } catch(e) {
     msgEl.textContent = '模型加载失败';
     errEl.textContent = String(e.message||e);
@@ -1338,10 +2248,22 @@ goBtn.addEventListener('click', async ()=>{
   setLabel('未检测到手', '#4a9dff');
 });
 
+demoBtn.addEventListener('click', startDemo);
+demoNow.addEventListener('click', startDemo);
+
 // 调试用：控制台里能读到当前抓取状态
 window.__dbg = () => ({
   grabMix, grabT, grabTarget, dist: view.dist,
+  grabHeld, heartCharge, heartLocked, lockedCharge, pendingBurstAt, burstK, burstFxT,
+  heartPoint: { ...heartPoint }, palmPresent,
   portraitMix, portraitTarget, portraitOn,
+  palmStrength, palmTarget, palmPoint: { ...palmPoint }, trails: TRAILS_ENABLED,
+  shapeIndex: currentPortrait, shapeLabel: (SHAPES[currentPortrait] && SHAPES[currentPortrait].label) || null,
+  pinchOverride,
+  pinchCal: { ...pinchCal },
+  qualityLevel, activeParticles, configuredParticles: CFG.particles,
+  coasting: coasting ? { yaw: +coasting.yaw.toFixed(1), pitch: +coasting.pitch.toFixed(1) } : null,
+  gainRamp, awaitingReacquire,
   uGrabK: field ? field.material.uniforms.uGrabK.value : null,
   uGrabT: field ? field.material.uniforms.uGrabT.value : null,
   uMorph: field ? field.material.uniforms.uMorph.value : null,
@@ -1351,9 +2273,39 @@ window.__dbg = () => ({
 // 测试用：喂合成的关键点，不依赖摄像头
 window.__test = {
   step: (hands, now, dt) => { stepHands(hands, now, dt); applyCamera(dt, now/1000); },
-  state: () => ({ grabMix, grabT, grabTarget, portraitMix, portraitOn, currentPortrait, switchQueue, yaw: view.yaw, pitch: view.pitch, dist: view.dist }),
-  reset: () => { prevPalm = null; moveBuf = []; stepHands.lastCount = -1; stepHands.gapBase = null; },
+  state: () => ({ grabMix, grabT, grabTarget, grabHeld, heartCharge, heartLocked, lockedCharge, pendingBurstAt, burstK, burstFxT, heartPoint: { ...heartPoint }, palmPresent, pinchOverride, pinchCal: { ...pinchCal }, calibration: { ...calState }, qualityLevel, activeParticles, configuredParticles: CFG.particles, portraitMix, portraitOn, currentPortrait, shapeIndex: currentPortrait, switchQueue, pendingShape, yaw: view.yaw, pitch: view.pitch, dist: view.dist, coasting: !!coasting, coastingYaw: coasting ? coasting.yaw : 0, coastingPitch: coasting ? coasting.pitch : 0, gainRamp, awaitingReacquire, palmStrength, palmTarget, palmPoint: { ...palmPoint }, trails: TRAILS_ENABLED }),
+  reset: () => { prevPalm = null; moveBuf = []; stepHands.lastCount = -1; stepHands.gapBase = null; pendingShape = -1; pendingSince = 0; portraitCooldownUntil = 0; pinchOverride = null; flick.length = 0; coasting = null; awaitingReacquire = false; gainRamp = 1; palmTarget = 0; palmStrength = 0; palmPoint.x = 0.5; palmPoint.y = 0.5; heartPoint.x = 0.5; heartPoint.y = 0.5; heartCharge = 0; heartLocked = false; lockedCharge = 0; pendingBurstAt = 0; lastPinchReleaseAt = 0; lastPinchReleaseCharge = 0; lastPinch01 = 0; burstK = 0; burstKick = 0; burstFxT = 1e9; heartCooldownUntil = 0; waitPinchRelease = false; grabHeld = false; palmPresent = false; },
+  setPinch: (v) => { pinchOverride = clamp(v, 0, 1); grabTarget = pinchOverride; return pinchOverride; },
+  clearPinch: () => { pinchOverride = null; },
+  startCalibration,
+  calibrationState: () => ({ ...calState, pinchCal: { ...pinchCal } }),
+  setPinchCal: (lo, hi) => { pinchCal = { lo, hi, calibrated: true }; updateCalInfo(); return { ...pinchCal }; },
+  resetPinchCal: () => {
+    pinchCal = { lo: CFG.pinchShut, hi: CFG.pinchOpen, calibrated: false };
+    try { localStorage.removeItem(PINCH_CAL_KEY); } catch(_) {}
+    calState.active = false;
+    calBtn.textContent = '标定捏合';
+    updateCalInfo();
+  },
+  tickQuality: (dt) => stepQuality(dt),
+  resetQuality: () => {
+    qualityLevel = INITIAL_QUALITY_LEVEL;
+    activeParticles = CFG.particles;
+    qualityAccum = 0;
+    qualityFrames = 0;
+    qualityCooldown = 0;
+    if (field) field.geometry.setDrawRange(0, activeParticles);
+    updateHudQuality();
+  },
   setPortrait: (v) => { portraitOn = !!v; portraitTarget = v ? 1 : 0; },
+  setShape: (i) => {
+    if (!portraitSets[i]) return false;
+    swapPortrait(i);
+    switchQueue = null;
+    portraitOn = true;
+    portraitTarget = 1;
+    return true;
+  },
   swap: swapPortrait
 };
 

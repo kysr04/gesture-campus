@@ -47,6 +47,12 @@ const POSE = {
     thumbTip: { x: 0.35, y: 0.56 }
   }),
 
+  /** 只伸小指、拇指内收，用来切 DNA。 */
+  pinky: () => makeHand({
+    ext: [0, 0, 0, 1],
+    thumbTip: { x: 0.35, y: 0.56 }
+  }),
+
   /** 捏合：拇指尖贴住食指尖。 */
   pinch: () => makeHand({
     thumbTip: { x: 0.423, y: 0.35 }
