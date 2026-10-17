@@ -53,7 +53,8 @@
     <div id="state"><span id="dot"></span><span id="label">初始化</span></div>
     <div id="hint">
       <b>手掌平移</b> 在粒子中穿行<br>
-      <b>比 1</b> 全场粒子聚成人像<br>
+      <b>比 1</b> 原色人像<br>
+      <b>比 2</b> 蓝色调人像<br>
       <b>捏合</b> 把周围的粒子吸进掌心<br>
       <b>两只手</b> 推进 / 后退<br>
       <b>手离开画面</b> 人像散开
@@ -114,6 +115,7 @@ const CFG = {
 // 人像：一张抠好的透明底照片，所有粒子最后都落到它上面
 const PORTRAIT = {
   url: './assets/portrait-particles.json',
+  photoUrl: './assets/portrait.png',
   height: 7.2,             // 在世界里的高度
   ahead: 8.6               // 摆在相机前方多远
 };
@@ -201,6 +203,9 @@ const stage = document.getElementById('stage');
 const glCanvas = document.getElementById('gl');
 let THREE = null, renderer = null, scene = null, camera = null;
 let field = null, glow = null, aura = null, portraitInfo = null, portraitMesh = null;
+let portraitSets = [null, null];   // [0]=JSON原色，[1]=照片蓝色调
+let currentPortrait = 0;
+let switchQueue = null;             // 待切换的目标 index
 let grabMix = 0, grabTarget = 0, grabT = 0;
 let portraitMix = 0, portraitTarget = 0;
 
@@ -382,9 +387,10 @@ function fieldMaterial(){
  * 位置存的是"人像平面坐标"，真正的世界坐标在着色器里按相机朝向算，
  * 这样人像永远正面朝着你。
  */
-async function loadPortrait(n){
-  // ===== 使用外部粒子坐标 JSON（原色）=====
-  // 下面旧的"从 portrait.png 采样"实现已停用，保留在函数尾部备用。
+async function loadPortrait(n, mode){
+  // mode='json'：使用外部粒子坐标（原色）
+  // mode='photo'：从 portrait.png 采样（蓝色调）
+  if (mode === 'json') {
   const res = await fetch(PORTRAIT.url);
   if (!res.ok) throw new Error('人像 JSON 加载失败 ' + res.status);
   const pts = await res.json();
@@ -428,10 +434,11 @@ async function loadPortrait(n){
     jedgeAttr[i]  = 0;
   }
   return { target: jtarget, color: jcolor, edge: jedgeAttr, size: sizeAttr, alpha: alphaAttr, planeW: jplaneW, planeH: jplaneH, meshPositions: [] };
+  }
 
-  // ===== 旧的 portrait.png 采样实现（已停用）=====
+  // ===== portrait.png 采样（蓝色调，比 2 用）=====
   const img = new Image();
-  img.src = PORTRAIT.url;
+  img.src = PORTRAIT.photoUrl;
   await img.decode();
 
   // 采样密一点，眼睛、唇缝和发丝才不会在放大后变成一团。
@@ -610,6 +617,9 @@ async function loadPortrait(n){
   const target = new Float32Array(n * 3);
   const color = new Float32Array(n * 3);
   const edgeAttr = new Float32Array(n);
+  const sizeAttr = new Float32Array(n);
+  const alphaAttr = new Float32Array(n);
+  const baseSize = PORTRAIT_POINT_SIZE * (renderer ? renderer.getPixelRatio() : 1);
   const jx = planeW / W, jy = planeH / H;
   const dustCount = Math.floor(n * 0.024);
 
@@ -666,6 +676,8 @@ async function loadPortrait(n){
       color[i*3+1] = 0.09 * g;
       color[i*3+2] = 0.30 * g;
       edgeAttr[i] = -1 - Math.random() * 0.25;
+      sizeAttr[i] = baseSize * 0.62;
+      alphaAttr[i] = 1;
       continue;
     }
 
@@ -705,6 +717,8 @@ async function loadPortrait(n){
     color[i*3]   = cr;
     color[i*3+1] = cg;
     color[i*3+2] = cb;
+    sizeAttr[i]  = baseSize * (0.72 + Math.random() * 0.28);
+    alphaAttr[i] = 1;
   }
 
   // 背后那团光也按人像轮廓生成，而不是一个圆形光斑。
@@ -726,7 +740,7 @@ async function loadPortrait(n){
   gx.fillRect(0, 0, glowCanvas.width, glowCanvas.height);
 
   return {
-    target, color, edge: edgeAttr, planeW, planeH, glowCanvas, meshPositions,
+    target, color, edge: edgeAttr, size: sizeAttr, alpha: alphaAttr, planeW, planeH, glowCanvas, meshPositions,
     stats: {
       featureMax: +featureMax.toFixed(3),
       featureMean: +(featureSum / Math.max(1, featureCount)).toFixed(3),
@@ -779,6 +793,20 @@ function buildField(portrait){
   return g;
 }
 
+/** 把人像切换成第 idx 套（0=JSON原色，1=照片蓝色调）。 */
+function swapPortrait(idx){
+  const d = portraitSets[idx];
+  if (!d || !field) return;
+  const attrs = field.geometry.attributes;
+  attrs.aTarget.array.set(d.target);  attrs.aTarget.needsUpdate = true;
+  attrs.aColor.array.set(d.color);    attrs.aColor.needsUpdate = true;
+  attrs.aEdge.array.set(d.edge);      attrs.aEdge.needsUpdate = true;
+  attrs.aSize.array.set(d.size);      attrs.aSize.needsUpdate = true;
+  attrs.aAlpha.array.set(d.alpha);    attrs.aAlpha.needsUpdate = true;
+  currentPortrait = idx;
+  if (aura) aura.scale.set(d.planeW * 1.35, d.planeH * 1.20, 1);
+}
+
 /** 手心里那团光的贴图：中心亮核 + 一圈很淡的外环。 */
 function glowTexture(){
   const c = document.createElement('canvas');
@@ -826,8 +854,12 @@ async function buildScene(onStage){
 
   onStage('正在采样人像…');
   let portrait = null;
-  try { portrait = await loadPortrait(CFG.particles); }
-  catch(e){ console.warn('人像加载失败', e); }
+  try { portraitSets[0] = await loadPortrait(CFG.particles, 'json'); }
+  catch(e){ console.warn('人像1(JSON)加载失败', e); }
+  try { portraitSets[1] = await loadPortrait(CFG.particles, 'photo'); }
+  catch(e){ console.warn('人像2(照片)加载失败', e); }
+  portrait = portraitSets[0] || portraitSets[1] || null;
+  currentPortrait = portraitSets[0] ? 0 : 1;
   portraitInfo = portrait;
   window.__portraitStats = portrait ? portrait.stats : null;
 
@@ -928,6 +960,13 @@ function applyCamera(dt, elapsed){
   if (DEBUG_PORTRAIT) portraitMix = 1;
   if (!Number.isNaN(DEBUG_MORPH)) portraitMix = DEBUG_MORPH;
   fu.uMorph.value = portraitMix;
+  // 先散开再聚：散到底后切数据，再重新聚拢
+  if (switchQueue != null && portraitMix < 0.04) {
+    swapPortrait(switchQueue);
+    portraitOn = true;
+    portraitTarget = 1;
+    switchQueue = null;
+  }
   const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
   const upv = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
   const fwd = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 2).negate();
@@ -968,7 +1007,7 @@ const setLabel = (text, color='#4a9dff')=>{
 
 let lostCount = 0;
 let twoHandFrames = 0, singleFrames = 0, twoHand = false;
-let oneSince = 0, lostAt = 0;
+let oneSince = 0, twoSince = 0, lostAt = 0;
 let portraitCooldownUntil = 0;
 let portraitOn = false;
 let moveBuf = [];
@@ -1051,22 +1090,31 @@ function stepHands(hands, now, dt){
   const n = moveBuf.length/2 || 1;
   const still = Math.hypot(sx/n, sy/n) <= CFG.stillPx;
 
-  // 比 1：只伸食指、拇指内收、停住一会儿 → 全场粒子收成人像。
-  // 2/3/4 暂时不接，留给后面加别的人像。
-  if (!portraitOn) {
-    // 必须明确是食指，不能把中指/无名指伸出来也当成 1。
-    const isOne = f.index && !f.middle && !f.ring && !f.pinky && f.thumbIn;
-    if (isOne && still) {
-      if (!oneSince) oneSince = now;
-    }
-    else oneSince = 0;
+  // 比 1 = JSON 原色人像；比 2 = 照片蓝色调人像。
+  // 都是"伸直对应手指 + 拇指内收 + 停住一会儿"。
+  const isOne = f.index && !f.middle && !f.ring && !f.pinky && f.thumbIn;
+  const isTwo = f.index && f.middle && !f.ring && !f.pinky && f.thumbIn;
+  if (!portraitOn && switchQueue == null) {
+    if (isOne && still) { if (!oneSince) oneSince = now; } else oneSince = 0;
+    if (isTwo && still) { if (!twoSince) twoSince = now; } else twoSince = 0;
     if (oneSince && now - oneSince >= CFG.portraitHoldMs && now >= portraitCooldownUntil) {
+      swapPortrait(0);
       portraitOn = true;
       portraitTarget = 1;
-      oneSince = 0;
+      oneSince = 0; twoSince = 0;
+    } else if (twoSince && now - twoSince >= CFG.portraitHoldMs && now >= portraitCooldownUntil) {
+      swapPortrait(1);
+      portraitOn = true;
+      portraitTarget = 1;
+      oneSince = 0; twoSince = 0;
     }
   } else {
-    oneSince = 0;
+    oneSince = 0; twoSince = 0;
+    // 已有人像时比另一个数字：先散开，再聚成对应的人像
+    if (portraitOn && switchQueue == null && still) {
+      if (isTwo && currentPortrait !== 1) { switchQueue = 1; portraitOn = false; portraitTarget = 0; }
+      else if (isOne && currentPortrait !== 0) { switchQueue = 0; portraitOn = false; portraitTarget = 0; }
+    }
   }
 
   // 手掌平移 = 朝向。用增量累加，手停住就停。
@@ -1087,7 +1135,9 @@ function stepHands(hands, now, dt){
   grabTarget = portraitOn ? 0 : (pinch > 0.55 ? pinch : 0);
   if (DEBUG_GRAB) grabTarget = 1;      // 调试用：?grab=1 强制抓取，方便无手时看效果
 
-  if (portraitOn) setLabel('人像 · 放下手散开', '#c9b3ff');
+  if (portraitOn) setLabel(currentPortrait === 1 ? '人像2 · 放下手散开' : '人像1 · 放下手散开', '#c9b3ff');
+  else if (switchQueue != null) setLabel('切换中…', '#c9b3ff');
+  else if (twoSince) setLabel('保持比 2…', '#7a9dff');
   else if (oneSince) setLabel('保持比 1…', '#c9b3ff');
   else if (grabTarget > 0.5) setLabel('抓取中', '#ffd166');
   else setLabel('穿行中', '#37e08a');
@@ -1293,9 +1343,10 @@ window.__dbg = () => ({
 // 测试用：喂合成的关键点，不依赖摄像头
 window.__test = {
   step: (hands, now, dt) => { stepHands(hands, now, dt); applyCamera(dt, now/1000); },
-  state: () => ({ grabMix, grabT, grabTarget, portraitMix, portraitOn, yaw: view.yaw, pitch: view.pitch, dist: view.dist }),
+  state: () => ({ grabMix, grabT, grabTarget, portraitMix, portraitOn, currentPortrait, switchQueue, yaw: view.yaw, pitch: view.pitch, dist: view.dist }),
   reset: () => { prevPalm = null; moveBuf = []; stepHands.lastCount = -1; stepHands.gapBase = null; },
-  setPortrait: (v) => { portraitOn = !!v; portraitTarget = v ? 1 : 0; }
+  setPortrait: (v) => { portraitOn = !!v; portraitTarget = v ? 1 : 0; },
+  swap: swapPortrait
 };
 
 boot0();
