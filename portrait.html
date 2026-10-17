@@ -83,7 +83,7 @@
 /* ------------------------------ 参数 ---------------------------------- */
 
 const CFG = {
-  particles: 90000,        // 点数：密度不用太高，轮廓清楚了就够
+  particles: 15000,        // 直接使用外部粒子坐标 JSON 的点数
   shellInner: 12,          // 云内半径要小于相机轨道半径，粒子才会从身边掠过
   shellOuter: 95,
   orbitBase: 9,            // 相机轨道半径 = orbitBase + dist * orbitGain
@@ -113,7 +113,7 @@ const CFG = {
 
 // 人像：一张抠好的透明底照片，所有粒子最后都落到它上面
 const PORTRAIT = {
-  url: './assets/portrait.png',
+  url: './assets/portrait-particles.json',
   height: 7.2,             // 在世界里的高度
   ahead: 8.6               // 摆在相机前方多远
 };
@@ -157,6 +157,7 @@ const TUNE = {
   size: parseFloat(QS.get('size')),
   edge: parseFloat(QS.get('edge'))
 };
+const PORTRAIT_POINT_SIZE = 3.3;
 if (Number.isFinite(TUNE.n) && TUNE.n >= 20000 && TUNE.n <= 220000) CFG.particles = TUNE.n;
 const lerp = (a,b,t)=> a+(b-a)*t;
 const wait = ms=> new Promise(r=>setTimeout(r,ms));
@@ -175,13 +176,13 @@ function palm(lm){
 
 function fingers(lm){
   const w = lm[0];
+  const up = (tip, pip) => dist2(lm[tip], w) > dist2(lm[pip], w) * 1.06;
+  const index = up(8, 6), middle = up(12, 10), ring = up(16, 14), pinky = up(20, 18);
   let extended = 0;
-  for (const [tip,pip] of [[8,6],[12,10],[16,14],[20,18]]) {
-    if (dist2(lm[tip], w) > dist2(lm[pip], w) * 1.06) extended++;
-  }
+  for (const v of [index, middle, ring, pinky]) if (v) extended++;
   const s = palm(lm).scale;
   return {
-    extended,
+    extended, index, middle, ring, pinky,
     thumbIn: dist2(lm[4], lm[5]) / s < 0.9,
     pinch: dist2(lm[4], lm[8]) / s
   };
@@ -199,7 +200,7 @@ let bob = 0;               // 相机前向惯量
 const stage = document.getElementById('stage');
 const glCanvas = document.getElementById('gl');
 let THREE = null, renderer = null, scene = null, camera = null;
-let field = null, glow = null, aura = null;
+let field = null, glow = null, aura = null, portraitInfo = null, portraitMesh = null;
 let grabMix = 0, grabTarget = 0, grabT = 0;
 let portraitMix = 0, portraitTarget = 0;
 
@@ -229,10 +230,13 @@ function fieldMaterial(){
       uPRight: { value: new THREE.Vector3(1,0,0) },
       uPUp: { value: new THREE.Vector3(0,1,0) },
       uPNormal: { value: new THREE.Vector3(0,0,1) },
-      uPhotoGain: { value: 0.92 },                       // 人像态粒子的不透明度
-      uDrift: { value: Number.isFinite(TUNE.drift) ? TUNE.drift : 0.12 },
-      uTwinkle: { value: Number.isFinite(TUNE.tw) ? TUNE.tw : 0.18 },
-      uSize: { value: Number.isFinite(TUNE.size) ? TUNE.size : 4.0 },
+      uPhotoGain: { value: 0.32 },                       // 人像态单点透明度：靠叠加发光，不能单点就压满
+      uDrift: { value: Number.isFinite(TUNE.drift) ? TUNE.drift : 0.055 },
+      uTwinkle: { value: Number.isFinite(TUNE.tw) ? TUNE.tw : 0.12 },
+      uSize: { value: (Number.isFinite(TUNE.size) ? TUNE.size : PORTRAIT_POINT_SIZE) * renderer.getPixelRatio() },
+      uHeadTurn: { value: 0 },                           // 头部轻微左右转，露出一点体积
+      uHeadTilt: { value: 0 },
+      uPortraitH: { value: PORTRAIT.height },
       cA: { value: new THREE.Color(0x9fe8ff) },
       cB: { value: new THREE.Color(0x6f9dff) },
       cC: { value: new THREE.Color(0xd6c4ff) }
@@ -240,14 +244,16 @@ function fieldMaterial(){
     vertexShader: `
       attribute float aSeed; attribute float aTint;
       attribute vec3 aTarget; attribute vec3 aColor; attribute float aEdge;
+      attribute float aSize; attribute float aAlpha;
       attribute vec3 aHeart;
       uniform float uTime;
       uniform vec3 uGrab; uniform vec3 uGrabAxis; uniform vec3 uGrabRight; uniform vec3 uGrabUp;
       uniform float uGrabR; uniform float uGrabK; uniform float uGrabT;
       uniform vec3 uPCenter; uniform vec3 uPRight; uniform vec3 uPUp; uniform vec3 uPNormal;
       uniform float uMorph; uniform float uDrift; uniform float uSize;
+      uniform float uHeadTurn; uniform float uHeadTilt; uniform float uPortraitH;
       varying float vShade; varying float vTint; varying float vWarm; varying float vPhoto; varying float vEdge;
-      varying float vSeed; varying float vHeartR;
+      varying float vSeed; varying float vHeartR; varying float vDust; varying float vDepth; varying float vAlpha;
       varying vec3 vColor;
 
       vec3 rotAxis(vec3 v, vec3 axis, float ang){
@@ -288,19 +294,28 @@ function fieldMaterial(){
           }
         }
 
-        // 人像：每颗粒子按自己的节奏飞向照片上的一个像素点。
-        // 目标位置在相机坐标里，所以人像始终朝着你，不会被看成一张纸片。
-        vec3 targetW = uPCenter + uPRight * aTarget.x + uPUp * aTarget.y + uPNormal * aTarget.z;
-        // 人像态下每颗粒子轻微漂动，脸保持清楚，又不会像贴图
+        // 人像：aTarget 是照片平面上的点，z 是从明暗和轮廓估出来的厚度。
+        // aEdge < 0 的点是头部周围的悬浮尘埃；其余是脸、头发和衣服上的网点。
+        float dust = step(aEdge, -0.5);
+        float edgeAmt = clamp(max(aEdge, 0.0), 0.0, 1.0);
+        vec3 local = aTarget;
+        // 绕 Y / X 只转几度，靠鼻子、眼窝、发际线的深度差产生体积感。
+        float cy = cos(uHeadTurn), sy = sin(uHeadTurn);
+        local.xz = mat2(cy, -sy, sy, cy) * local.xz;
+        float cx = cos(uHeadTilt), sx = sin(uHeadTilt);
+        local.yz = mat2(cx, -sx, sx, cx) * local.yz;
+        vec3 targetW = uPCenter + uPRight * local.x + uPUp * local.y + uPNormal * local.z;
+        // 结构点几乎不动，暗部和尘埃才允许呼吸，脸不会一直发虚。
+        float driftAmt = uDrift * (0.08 + 0.28 * (1.0 - edgeAmt) + 1.8 * dust);
         targetW += vec3(
-          sin(uTime * 0.8 + aSeed * 41.0),
-          cos(uTime * 0.62 + aSeed * 29.0),
-          sin(uTime * 0.95 + aSeed * 17.0)
-        ) * (uDrift * (0.5 + aSeed * 0.9));
-        float mp = clamp(uMorph * 1.35 - aSeed * 0.25, 0.0, 1.0);
+          sin(uTime * 0.70 + aSeed * 41.0),
+          cos(uTime * 0.55 + aSeed * 29.0),
+          sin(uTime * 0.85 + aSeed * 17.0)
+        ) * driftAmt;
+        // 从上往下扫过一遍，再按粒子自己的节奏落位。
+        float scan = clamp(0.5 - local.y / max(uPortraitH, 0.001), 0.0, 1.0);
+        float mp = clamp(uMorph * 1.42 - aSeed * 0.16 - scan * 0.10, 0.0, 1.0);
         mp = mp * mp * (3.0 - 2.0 * mp);
-        // 起步快、收尾慢：先一批批冲进来，最后再轻轻落位，
-        // 中间不会长时间糊成一片
         mp = 1.0 - pow(1.0 - mp, 3.0);
         p = mix(p, targetW, mp);
 
@@ -310,39 +325,47 @@ function fieldMaterial(){
         vTint = aTint;
         vWarm = grabW;
         vPhoto = mp;
-        vEdge = aEdge * mp;
+        vEdge = edgeAmt * mp;
         vSeed = aSeed;
         vHeartR = length(aHeart.xy);
         vColor = aColor;
+        vDust = dust * mp;
+        vDepth = local.z;
+        vAlpha = aAlpha;
         float sz = clamp(150.0 / d, 1.2, 9.0) * (0.7 + aSeed * 0.6) * (1.0 - 0.30 * grabW);
-        gl_PointSize = mix(sz, uSize * (0.6 + aSeed * 0.6), mp);
-        gl_PointSize *= 1.0 + sin(3.14159 * mp) * 0.55;   // 飞行途中更大，聚拢过程才看得见
+        gl_PointSize = mix(sz, aSize, mp);
+        gl_PointSize *= 1.0 + sin(3.14159 * mp) * 0.22;   // 飞行途中只轻微放大，落位时不炸成光团
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
       uniform float uOpacity; uniform vec3 cA; uniform vec3 cB; uniform vec3 cC;
       uniform float uPhotoGain; uniform float uTime; uniform float uTwinkle; uniform float uGrabK;
       varying float vShade; varying float vTint; varying float vWarm; varying float vPhoto; varying float vEdge;
-      varying vec3 vColor; varying float vSeed; varying float vHeartR;
+      varying vec3 vColor; varying float vSeed; varying float vHeartR; varying float vDust; varying float vDepth; varying float vAlpha;
       void main(){
         float r = length(gl_PointCoord - vec2(0.5));
         if (r > 0.5) discard;
-        // 星云要软光点；人像要实心小点，边缘太软整张脸就会发灰
-        float a = mix(smoothstep(0.5, 0.05, r), smoothstep(0.5, 0.33, r), vPhoto);
+        // 星云要软光点；人像要更实的小点，细密的网点才立得住。
+        float a = mix(smoothstep(0.5, 0.05, r), smoothstep(0.5, 0.38, r), vPhoto);
         vec3 col = mix(mix(cA, cB, vTint), cC, smoothstep(0.75, 1.0, vTint));
         // 抓取 = 爱心：从心核的玫瑰红渐变到边缘的浅粉白
         float g = clamp(vHeartR / 2.4, 0.0, 1.0);
         vec3 rose = mix(vec3(1.0, 0.30, 0.46), vec3(1.0, 0.80, 0.88), g);
         col = mix(col, rose, vWarm * 0.95);
-        col = mix(col, vColor, vPhoto * 0.92);
-        // 轮廓上偏冷白，人像就有了“光边”
-        col = mix(col, vec3(0.62, 0.84, 1.0), vEdge * 0.15);
-        // 半路发蓝白光：先是一团光，最后才落成五官
+        col = mix(col, vColor, vPhoto);
+        // 轮廓、眉眼和唇线用冷白青提亮，暗部保留深蓝体积。
+        col = mix(col, vec3(0.56, 0.92, 1.0), vEdge * 0.38);
+        col = mix(col, vec3(0.03, 0.16, 0.42), vDust);
+        float depthShade = clamp(1.0 + vDepth * 0.10, 0.82, 1.18);
+        col *= depthShade;
+        // 半路只闪一层蓝光，持续时间短，不会把整张脸洗白。
         float transit = sin(3.14159 * vPhoto);
-        col = mix(col, vec3(0.58, 0.80, 1.0), transit * 0.55);
+        col = mix(col, vec3(0.10, 0.46, 1.0), transit * 0.24);
         float alpha = a * vShade * uOpacity * mix(1.0, 0.50, vWarm);
-        alpha *= mix(1.0, uPhotoGain, vPhoto) * (1.0 + vEdge * 0.25)
-               * (1.0 + transit * 0.55);
+        alpha *= mix(1.0, vAlpha, vPhoto);
+        alpha *= mix(1.0, 1.0 + vEdge * 0.55, vPhoto);
+        alpha *= 1.0 + transit * 0.18;
+        alpha *= mix(1.0, 0.52, vDust);
         // 抓取时把没被吸走的背景粒子压暗，爱心才能成为唯一焦点
         alpha *= mix(1.0, 0.28, uGrabK * (1.0 - vWarm));
         // 人像态每颗粒子自己呼吸，整张脸才会"活"起来
@@ -360,50 +383,218 @@ function fieldMaterial(){
  * 这样人像永远正面朝着你。
  */
 async function loadPortrait(n){
+  // ===== 使用外部粒子坐标 JSON（原色）=====
+  // 下面旧的"从 portrait.png 采样"实现已停用，保留在函数尾部备用。
+  const res = await fetch(PORTRAIT.url);
+  if (!res.ok) throw new Error('人像 JSON 加载失败 ' + res.status);
+  const pts = await res.json();
+  if (!Array.isArray(pts) || !pts.length) throw new Error('人像 JSON 为空');
+
+  let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+  for (const p of pts) {
+    if (p.x < minx) minx = p.x;
+    if (p.x > maxx) maxx = p.x;
+    if (p.y < miny) miny = p.y;
+    if (p.y > maxy) maxy = p.y;
+  }
+  const cx = (minx + maxx) / 2, cy = (miny + maxy) / 2;
+  const spanX = Math.max(1e-6, maxx - minx), spanY = Math.max(1e-6, maxy - miny);
+  const jplaneH = PORTRAIT.height;
+  const jplaneW = jplaneH * (spanX / spanY);
+
+  const jtarget = new Float32Array(n * 3);
+  const jcolor = new Float32Array(n * 3);
+  const jedgeAttr = new Float32Array(n);
+  const sizeAttr = new Float32Array(n);
+  const alphaAttr = new Float32Array(n);
+
+  // JSON 的 r 是原图像素半径，按屏幕高度等比换算成屏幕像素。
+  const visH = 2 * PORTRAIT.ahead * Math.tan(31 * Math.PI / 180);
+  const screenH = (jplaneH / visH) * (window.innerHeight || 800);
+  const rScale = (screenH / spanY) * 2.0 * (renderer ? renderer.getPixelRatio() : 1);
+
+  for (let i = 0; i < n; i++) {
+    const p = pts[i % pts.length];
+    const c = p.c || [255, 255, 255];
+    const lum = (0.299*c[0] + 0.587*c[1] + 0.114*c[2]) / 255;
+    jtarget[i*3]   = (p.x - cx) / spanX * jplaneW;
+    jtarget[i*3+1] = -(p.y - cy) / spanY * jplaneH;
+    jtarget[i*3+2] = (lum - 0.5) * 0.5;      // 明暗给一点点厚度
+    jcolor[i*3]   = Math.pow(c[0] / 255, 2.2);
+    jcolor[i*3+1] = Math.pow(c[1] / 255, 2.2);
+    jcolor[i*3+2] = Math.pow(c[2] / 255, 2.2);
+    sizeAttr[i]  = (p.r || 2) * rScale;
+    alphaAttr[i] = p.a != null ? p.a : 1;
+    jedgeAttr[i]  = 0;
+  }
+  return { target: jtarget, color: jcolor, edge: jedgeAttr, size: sizeAttr, alpha: alphaAttr, planeW: jplaneW, planeH: jplaneH, meshPositions: [] };
+
+  // ===== 旧的 portrait.png 采样实现（已停用）=====
   const img = new Image();
   img.src = PORTRAIT.url;
   await img.decode();
 
-  const W = 420;
+  // 采样密一点，眼睛、唇缝和发丝才不会在放大后变成一团。
+  const W = 680;
   const H = Math.round(W * img.naturalHeight / img.naturalWidth);
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const x = c.getContext('2d', { willReadFrequently: true });
+  x.imageSmoothingEnabled = true;
+  x.imageSmoothingQuality = 'high';
   x.drawImage(img, 0, 0, W, H);
   const px = x.getImageData(0, 0, W, H).data;
   const N = W * H;
 
-  // 亮度和轮廓：五官都长在明暗变化剧烈的地方，
-  // 按这个权重撒点，脸才不会糊成一坨均匀的雾
+  // 亮度只描述明暗，不再直接等于颜色强度。
+  // 抠图边缘先清掉低 alpha 的白边，否则放大后会浮出一圈白雾。
   const alpha = new Uint8Array(N);
+  const alphaF = new Float32Array(N);
   const lum = new Float32Array(N);
+  const skin = new Float32Array(N);
   for (let i = 0; i < N; i++) {
     const p = i * 4;
-    alpha[i] = px[p + 3];
-    lum[i] = (0.299*px[p] + 0.587*px[p+1] + 0.114*px[p+2]) / 255;
+    const a = px[p + 3] < 24 ? 0 : px[p + 3];
+    alpha[i] = a;
+    alphaF[i] = a / 255;
+    const r = px[p], g = px[p+1], b = px[p+2];
+    const l = a ? (0.299*r + 0.587*g + 0.114*b) / 255 : 0;
+    lum[i] = l;
+    // 皮肤偏暖（R 明显高于 B），头发和衣服更灰/更暗。
+    const warm = clamp((r - b) / 85, 0, 1);
+    skin[i] = clamp((warm - 0.16) / 0.55, 0, 1)
+            * clamp((l - 0.24) / 0.28, 0, 1);
   }
-  const edge = new Float32Array(N);
+
+  /** 可分离盒式模糊，用来做低频明暗和轮廓距离。 */
+  const boxBlur = (src, radius, passes) => {
+    const a = Float32Array.from(src);
+    const b = new Float32Array(N);
+    const r = Math.max(1, radius | 0), win = r * 2 + 1;
+    const at = (xx, yy) => a[clamp(yy, 0, H-1) * W + clamp(xx, 0, W-1)];
+    for (let pass = 0; pass < passes; pass++) {
+      for (let y = 0; y < H; y++) {
+        const row = y * W;
+        let sum = 0;
+        for (let xx = -r; xx <= r; xx++) sum += at(xx, y);
+        for (let xx = 0; xx < W; xx++) {
+          b[row + xx] = sum / win;
+          sum += at(xx + r + 1, y) - at(xx - r, y);
+        }
+      }
+      for (let xx = 0; xx < W; xx++) {
+        let sum = 0;
+        for (let yy = -r; yy <= r; yy++) sum += b[clamp(yy, 0, H-1) * W + xx];
+        for (let yy = 0; yy < H; yy++) {
+          a[yy * W + xx] = sum / win;
+          sum += b[clamp(yy + r + 1, 0, H-1) * W + xx]
+               - b[clamp(yy - r, 0, H-1) * W + xx];
+        }
+      }
+    }
+    return a;
+  };
+
+  const base = boxBlur(lum, 5, 2);
+  const skinCtx = boxBlur(skin, 8, 2);
+
+  // 高频细节：眼睛、眉毛、鼻翼、唇缝和发丝都在这里。
+  const feature = new Float32Array(N);
+  let featureMax = 0, featureSum = 0, featureCount = 0;
   for (let yy = 1; yy < H-1; yy++) {
     for (let xx = 1; xx < W-1; xx++) {
       const i = yy*W + xx;
-      const gx = Math.abs(lum[i+1] - lum[i-1]);
-      const gy = Math.abs(lum[i+W] - lum[i-W]);
-      const ax = Math.abs(alpha[i+1] - alpha[i-1]) / 255;
-      const ay = Math.abs(alpha[i+W] - alpha[i-W]) / 255;
-      edge[i] = Math.min(1, gx + gy + (ax + ay) * 1.6);
+      if (alpha[i] < 24) continue;
+      const gx = Math.abs(lum[i+1] - lum[i-1]) * 0.5;
+      const gy = Math.abs(lum[i+W] - lum[i-W]) * 0.5;
+      const hp = Math.abs(lum[i] - base[i]);
+      feature[i] = clamp(gx * 4.4 + gy * 4.4 + hp * 5.2, 0, 1);
+      featureMax = Math.max(featureMax, feature[i]);
+      featureSum += feature[i];
+      featureCount++;
+    }
+  }
+
+  // 从透明边界向内做距离变换，得到发丝/肩膀的外轮廓带。
+  const dist = new Int32Array(N).fill(9999);
+  const queue = new Int32Array(N);
+  let qh = 0, qt = 0;
+  for (let yy = 0; yy < H; yy++) {
+    for (let xx = 0; xx < W; xx++) {
+      const i = yy*W + xx;
+      if (alpha[i] < 24) continue;
+      // 图片底边不是人像轮廓，不要在那儿点一条亮线。
+      const edgePx = (xx > 0 && alpha[i-1] < 24)
+        || (xx < W-1 && alpha[i+1] < 24)
+        || (yy > 0 && alpha[i-W] < 24)
+        || (yy < H-1 && alpha[i+W] < 24);
+      if (edgePx) { dist[i] = 0; queue[qt++] = i; }
+    }
+  }
+  while (qh < qt) {
+    const i = queue[qh++];
+    const d = dist[i] + 1;
+    const xx = i % W, yy = (i / W) | 0;
+    if (xx > 0 && alpha[i-1] > 24 && dist[i-1] > d) { dist[i-1] = d; queue[qt++] = i-1; }
+    if (xx < W-1 && alpha[i+1] > 24 && dist[i+1] > d) { dist[i+1] = d; queue[qt++] = i+1; }
+    if (yy > 0 && alpha[i-W] > 24 && dist[i-W] > d) { dist[i-W] = d; queue[qt++] = i-W; }
+    if (yy < H-1 && alpha[i+W] > 24 && dist[i+W] > d) { dist[i+W] = d; queue[qt++] = i+W; }
+  }
+  const rim = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    if (dist[i] < 9999) rim[i] = clamp(1 - dist[i] / 7, 0, 1);
+  }
+
+  // 伪深度：低频明暗给出鼻梁/眼窝，距离场把头部做成一个鼓起的体块。
+  const depth = new Float32Array(N);
+  for (let yy = 0; yy < H; yy++) {
+    const faceZone = 1 - clamp((yy / H - 0.70) / 0.14, 0, 1);
+    for (let xx = 0; xx < W; xx++) {
+      const i = yy*W + xx;
+      if (alpha[i] < 24) continue;
+      const dome = Math.min(1, dist[i] / 34) * 0.42 * faceZone;
+      depth[i] = clamp((base[i] - 0.34) * 1.48, -0.52, 0.72)
+               + dome - rim[i] * 0.20;
+    }
+  }
+
+  // 用深度梯度算一个假法线，从左上方打光。鼻子、脸颊和眼窝就有了明暗。
+  const reliefShade = new Float32Array(N).fill(1);
+  for (let yy = 1; yy < H-1; yy++) {
+    for (let xx = 1; xx < W-1; xx++) {
+      const i = yy*W + xx;
+      if (alpha[i] < 24) continue;
+      const dx = (depth[i-1] - depth[i+1]) * 4.5;
+      const dy = (depth[i-W] - depth[i+W]) * 4.5;
+      const inv = 1 / Math.sqrt(dx*dx + dy*dy + 1);
+      const lit = clamp(dx * inv * -0.58 + dy * inv * 0.54 + inv * 0.60, 0, 1);
+      reliefShade[i] = 0.50 + 0.58 * lit;
     }
   }
 
   const cand = [];
   const cum = [];
-  const EDGE_W = Number.isFinite(TUNE.edge) ? TUNE.edge : 1.6;
+  const EDGE_W = Number.isFinite(TUNE.edge) ? TUNE.edge : 1.0;
   let total = 0;
   for (let i = 0, p = 0; i < N; i++, p += 4) {
-    if (px[p + 3] > 60) cand.push(i);
-    if (px[p + 3] > 60) {
-      // 明暗主导：亮的地方粒子多，暗的地方粒子少，五官就靠明暗堆出来；
-      // 边界再加一点权重，眼睛、眉毛、嘴唇的轮廓会更清楚。
-      total += 0.04 + Math.pow(lum[i], 1.9) * 1.9 + edge[i] * EDGE_W;
+    if (alpha[i] > 24) {
+      cand.push(i);
+      const yy = (i / W) | 0;
+      const bottomFade = 1 - clamp((yy / H - 0.68) / 0.24, 0, 1) * 0.95;
+      const detail = clamp((feature[i] - 0.14) / 0.52, 0, 1);
+      // 被皮肤包围的暗部是眼窝、鼻孔和唇缝，要挖空，不能像头发一样铺满。
+      const faceDark = skinCtx[i] * clamp((0.48 - lum[i]) / 0.30, 0, 1);
+      const rimW = rim[i] * (0.06 + 0.94 * (1 - skinCtx[i]));
+      // 遮罩内保底密度，头发和衣服不会因为暗而消失；
+      // 细节和轮廓再叠上去，眼睛、眉毛、唇线才会变亮。
+      total += (0.26
+             + 0.30 * skin[i]
+             + 0.20 * alphaF[i]
+             + 0.26 * (1 - Math.min(1, lum[i] * 1.35))
+             + detail * (0.90 + 6.8 * skinCtx[i]) * EDGE_W
+             + rimW * 1.00
+             + base[i] * 0.10) * bottomFade
+             * (1 - faceDark * 0.52);
       cum.push(total);
     }
   }
@@ -420,23 +611,128 @@ async function loadPortrait(n){
   const color = new Float32Array(n * 3);
   const edgeAttr = new Float32Array(n);
   const jx = planeW / W, jy = planeH / H;
+  const dustCount = Math.floor(n * 0.024);
+
+  // 细网格线：只铺到头/颈，不铺到肩膀底边。它让粒子表面更像图1的立体网罩。
+  const meshPositions = [];
+  const meshStep = 9;
+  const meshRows = Math.max(2, Math.floor((H * 0.80) / meshStep));
+  const meshCols = Math.max(2, Math.floor(W / meshStep));
+  const grid = new Array(meshRows * meshCols).fill(null);
+  for (let gy = 0; gy < meshRows; gy++) {
+    for (let gx = 0; gx < meshCols; gx++) {
+      const xx = Math.min(W - 1, gx * meshStep);
+      const yy = Math.min(H - 1, gy * meshStep);
+      const i = yy * W + xx;
+      if (alpha[i] < 80) continue;
+      grid[gy * meshCols + gx] = {
+        x: (xx / W - 0.5) * planeW,
+        y: -(yy / H - 0.5) * planeH,
+        z: depth[i] + 0.03
+      };
+    }
+  }
+  for (let gy = 0; gy < meshRows; gy++) {
+    for (let gx = 0; gx < meshCols; gx++) {
+      const a = grid[gy * meshCols + gx];
+      if (!a) continue;
+      const right = gx + 1 < meshCols ? grid[gy * meshCols + gx + 1] : null;
+      const below = gy + 1 < meshRows ? grid[(gy + 1) * meshCols + gx] : null;
+      if (right) meshPositions.push(a.x,a.y,a.z, right.x,right.y,right.z);
+      if (below) meshPositions.push(a.x,a.y,a.z, below.x,below.y,below.z);
+    }
+  }
 
   for (let i = 0; i < n; i++) {
+    if (i < dustCount) {
+      // 头部周围保留一小撮悬浮尘埃，落位后仍有“数字空间”的空气感。
+      let dx = 0, dy = 0, ok = false;
+      for (let tries = 0; tries < 12; tries++) {
+        dx = (Math.random() - 0.5) * planeW * 1.30;
+        dy = (Math.random() - 0.5) * planeH * 1.12;
+        const pxX = clamp(Math.floor((dx / planeW + 0.5) * W), 0, W - 1);
+        const pxY = clamp(Math.floor((0.5 - dy / planeH) * H), 0, H - 1);
+        if (alpha[pxY * W + pxX] <= 24) { ok = true; break; }
+      }
+      if (!ok) {
+        dx = (Math.random() < 0.5 ? -1 : 1) * planeW * (0.48 + Math.random() * 0.18);
+        dy = (Math.random() - 0.5) * planeH * 1.04;
+      }
+      target[i*3]   = dx;
+      target[i*3+1] = dy;
+      target[i*3+2] = (Math.random() - 0.5) * 3.0;
+      const g = 0.35 + Math.random() * 0.55;
+      color[i*3]   = 0.012 * g;
+      color[i*3+1] = 0.09 * g;
+      color[i*3+2] = 0.30 * g;
+      edgeAttr[i] = -1 - Math.random() * 0.25;
+      continue;
+    }
+
     const k = pick(Math.random() * total);
     const sx = k % W, sy = (k / W) | 0;
-    target[i*3]   = (sx / W - 0.5) * planeW + (Math.random() - 0.5) * jx;
-    target[i*3+1] = -(sy / H - 0.5) * planeH + (Math.random() - 0.5) * jy;
-    // 有厚度的一层，转一点角度也能看出是立体的粒子云
-    target[i*3+2] = (Math.random() - 0.5) * 1.3;
-    edgeAttr[i] = edge[k];
-    const p = k * 4;
-    // 蓝色科技感：色相固定成蓝青，明暗只改亮度，不发白
-    const lv = 0.16 + 0.84 * lum[k];
-    color[i*3]   = lv * 0.30;
-    color[i*3+1] = lv * 0.72;
-    color[i*3+2] = lv * 1.00;
+    target[i*3]   = (sx / W - 0.5) * planeW + (Math.random() - 0.5) * jx * 0.72;
+    target[i*3+1] = -(sy / H - 0.5) * planeH + (Math.random() - 0.5) * jy * 0.72;
+    target[i*3+2] = depth[k] + (Math.random() - 0.5) * 0.07;
+    const detail = clamp((feature[k] - 0.14) / 0.52, 0, 1);
+    const faceDark = skinCtx[k] * clamp((0.48 - lum[k]) / 0.30, 0, 1);
+    const rimW = rim[k] * (0.06 + 0.94 * (1 - skinCtx[k]));
+    const syK = (k / W) | 0;
+    const bodyDim = 1 - clamp((syK / H - 0.68) / 0.24, 0, 1) * 0.80;
+    edgeAttr[i] = clamp(detail * (0.14 + 0.22 * skinCtx[k]) + rimW * 0.92, 0, 1) * bodyDim;
+
+    // 三档受控蓝：暗部是海军蓝，脸是中蓝，轮廓和五官才用冷白青。
+    // 保留原图的局部明暗，鼻梁、眼窝和唇形才不会被低频色块抹平。
+    const form = base[k] * 0.60 + lum[k] * 0.40;
+    const lv = clamp((form - 0.05) / 0.68, 0, 1);
+    const tone = clamp((Math.pow(lv, 0.90) + skin[k] * 0.08) * (1 - faceDark * 0.36)
+                     + clamp(depth[k] * 0.035, -0.025, 0.045), 0, 1);
+    let cr = lerp(0.010, 0.070, tone);
+    let cg = lerp(0.040, 0.420, tone);
+    let cb = lerp(0.130, 0.880, tone);
+    const shade = reliefShade[k];
+    const hairDim = 0.42 + 0.58 * skinCtx[k];
+    cr *= shade;
+    cg *= shade;
+    cb *= shade;
+    cr *= hairDim * bodyDim;
+    cg *= hairDim * bodyDim;
+    cb *= hairDim * bodyDim;
+    const ice = clamp(edgeAttr[i] * (0.58 + 0.16 * shade), 0, 0.68);
+    cr = lerp(cr, 0.500, ice);
+    cg = lerp(cg, 0.930, ice);
+    cb = lerp(cb, 1.000, ice);
+    color[i*3]   = cr;
+    color[i*3+1] = cg;
+    color[i*3+2] = cb;
   }
-  return { target, color, edge: edgeAttr, planeW, planeH };
+
+  // 背后那团光也按人像轮廓生成，而不是一个圆形光斑。
+  const glowCanvas = document.createElement('canvas');
+  glowCanvas.width = 280;
+  glowCanvas.height = Math.round(glowCanvas.width * img.naturalHeight / img.naturalWidth);
+  const gx = glowCanvas.getContext('2d');
+  gx.filter = 'blur(17px)';
+  gx.drawImage(img, 0, 0, glowCanvas.width, glowCanvas.height);
+  gx.globalCompositeOperation = 'source-in';
+  gx.fillStyle = '#1f6dff';
+  gx.fillRect(0, 0, glowCanvas.width, glowCanvas.height);
+  gx.globalCompositeOperation = 'source-over';
+  gx.globalAlpha = 0.20;
+  gx.filter = 'blur(8px)';
+  gx.drawImage(img, 0, 0, glowCanvas.width, glowCanvas.height);
+  gx.globalCompositeOperation = 'source-in';
+  gx.fillStyle = '#6fdcff';
+  gx.fillRect(0, 0, glowCanvas.width, glowCanvas.height);
+
+  return {
+    target, color, edge: edgeAttr, planeW, planeH, glowCanvas, meshPositions,
+    stats: {
+      featureMax: +featureMax.toFixed(3),
+      featureMean: +(featureSum / Math.max(1, featureCount)).toFixed(3),
+      pixels: featureCount
+    }
+  };
 }
 
 /** 心形目标点：参数化爱心曲线按随机半径填充，u 是右、v 是上、w 是厚度。 */
@@ -477,6 +773,8 @@ function buildField(portrait){
     g.setAttribute('aTarget', new THREE.BufferAttribute(portrait.target, 3));
     g.setAttribute('aColor', new THREE.BufferAttribute(portrait.color, 3));
     g.setAttribute('aEdge', new THREE.BufferAttribute(portrait.edge, 1));
+    g.setAttribute('aSize', new THREE.BufferAttribute(portrait.size, 1));
+    g.setAttribute('aAlpha', new THREE.BufferAttribute(portrait.alpha, 1));
   }
   return g;
 }
@@ -530,6 +828,8 @@ async function buildScene(onStage){
   let portrait = null;
   try { portrait = await loadPortrait(CFG.particles); }
   catch(e){ console.warn('人像加载失败', e); }
+  portraitInfo = portrait;
+  window.__portraitStats = portrait ? portrait.stats : null;
 
   field = new THREE.Points(buildField(portrait), fieldMaterial());
   scene.add(field);
@@ -539,13 +839,30 @@ async function buildScene(onStage){
 
   // 人像背后的蓝色光晕
   aura = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: glowTexture(), color: 0x1f6bff, transparent: true, opacity: 0,
+    map: portrait && portrait.glowCanvas
+      ? (() => { const t = new THREE.CanvasTexture(portrait.glowCanvas); t.colorSpace = THREE.SRGBColorSpace; return t; })()
+      : glowTexture(),
+    color: 0xffffff, transparent: true, opacity: 0,
     depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending
   }));
-  aura.scale.setScalar(11);
+  aura.scale.set(portrait ? portrait.planeW * 1.35 : 11, portrait ? portrait.planeH * 1.20 : 11, 1);
   aura.renderOrder = -1;
   aura.frustumCulled = false;
   scene.add(aura);
+
+  if (portrait && portrait.meshPositions && portrait.meshPositions.length) {
+    const meshGeo = new THREE.BufferGeometry();
+    meshGeo.setAttribute('position', new THREE.Float32BufferAttribute(portrait.meshPositions, 3));
+    const meshMat = new THREE.LineBasicMaterial({
+      color: 0x54c8ff, transparent: true, opacity: 0,
+      blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false
+    });
+    portraitMesh = new THREE.LineSegments(meshGeo, meshMat);
+    portraitMesh.frustumCulled = false;
+    portraitMesh.renderOrder = 1;
+    portraitMesh.visible = false;
+    scene.add(portraitMesh);
+  }
 
   resize();
   window.addEventListener('resize', resize);
@@ -557,6 +874,10 @@ function resize(){
   if (!renderer) return;
   const w = stage.clientWidth || 1, h = stage.clientHeight || 1;
   renderer.setSize(w, h, false);      // canvas 由 CSS 铺满，这里只改绘制缓冲
+  if (field) {
+    field.material.uniforms.uSize.value =
+      (Number.isFinite(TUNE.size) ? TUNE.size : PORTRAIT_POINT_SIZE) * renderer.getPixelRatio();
+  }
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
 }
@@ -614,9 +935,21 @@ function applyCamera(dt, elapsed){
   fu.uPRight.value.copy(right);
   fu.uPUp.value.copy(upv);
   fu.uPNormal.value.copy(fwd).negate();
+  // 保真优先：不再额外转头，只留一丝呼吸感，脸型按原照片来。
+  fu.uHeadTurn.value = Math.sin(elapsed * 0.32) * 0.006;
+  fu.uHeadTilt.value = Math.cos(elapsed * 0.27) * 0.004;
+  if (portraitMesh) {
+    portraitMesh.position.copy(fu.uPCenter.value);
+    portraitMesh.quaternion.copy(camera.quaternion);
+    portraitMesh.rotateY(fu.uHeadTurn.value);
+    portraitMesh.rotateX(fu.uHeadTilt.value);
+    portraitMesh.visible = portraitMix > 0.015;
+    portraitMesh.material.opacity = Math.pow(clamp(portraitMix, 0, 1), 2) * 0.06;
+  }
   if (aura) {
-    aura.position.copy(camera.position).addScaledVector(fwd, PORTRAIT.ahead + 1.2);
-    aura.material.opacity = portraitMix * 0.22;
+    aura.position.copy(camera.position).addScaledVector(fwd, PORTRAIT.ahead + 0.55);
+    if (portraitInfo) aura.scale.set(portraitInfo.planeW * 1.35, portraitInfo.planeH * 1.20, 1);
+    aura.material.opacity = portraitMix * 0.18;
   }
   renderer.render(scene, camera);
 }
@@ -636,6 +969,7 @@ const setLabel = (text, color='#4a9dff')=>{
 let lostCount = 0;
 let twoHandFrames = 0, singleFrames = 0, twoHand = false;
 let oneSince = 0, lostAt = 0;
+let portraitCooldownUntil = 0;
 let portraitOn = false;
 let moveBuf = [];
 const filterPalmX = { v: null }, filterPalmY = { v: null };
@@ -657,7 +991,11 @@ function stepHands(hands, now, dt){
     grabTarget = DEBUG_GRAB ? 1 : 0;
     if (portraitOn) {
       if (!lostAt) lostAt = now;
-      if (now - lostAt >= CFG.portraitLostMs) { portraitOn = false; portraitTarget = 0; }
+      if (now - lostAt >= CFG.portraitLostMs) {
+        portraitOn = false;
+        portraitTarget = 0;
+        portraitCooldownUntil = now + 900;
+      }
       setLabel(portraitOn ? '人像 · 手回到画面' : '未检测到手', portraitOn ? '#c9b3ff' : '#4a9dff');
     } else {
       setLabel('未检测到手', '#4a9dff');
@@ -716,10 +1054,13 @@ function stepHands(hands, now, dt){
   // 比 1：只伸食指、拇指内收、停住一会儿 → 全场粒子收成人像。
   // 2/3/4 暂时不接，留给后面加别的人像。
   if (!portraitOn) {
-    const isOne = f.extended === 1 && f.thumbIn;
-    if (isOne && still) { if (!oneSince) oneSince = now; }
+    // 必须明确是食指，不能把中指/无名指伸出来也当成 1。
+    const isOne = f.index && !f.middle && !f.ring && !f.pinky && f.thumbIn;
+    if (isOne && still) {
+      if (!oneSince) oneSince = now;
+    }
     else oneSince = 0;
-    if (oneSince && now - oneSince >= CFG.portraitHoldMs) {
+    if (oneSince && now - oneSince >= CFG.portraitHoldMs && now >= portraitCooldownUntil) {
       portraitOn = true;
       portraitTarget = 1;
       oneSince = 0;
@@ -747,6 +1088,7 @@ function stepHands(hands, now, dt){
   if (DEBUG_GRAB) grabTarget = 1;      // 调试用：?grab=1 强制抓取，方便无手时看效果
 
   if (portraitOn) setLabel('人像 · 放下手散开', '#c9b3ff');
+  else if (oneSince) setLabel('保持比 1…', '#c9b3ff');
   else if (grabTarget > 0.5) setLabel('抓取中', '#ffd166');
   else setLabel('穿行中', '#37e08a');
   prevPalm = p;

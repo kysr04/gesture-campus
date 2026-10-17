@@ -19,6 +19,7 @@ Copy-Item -LiteralPath "hand_landmarker.task" -Destination "dist\hand_landmarker
 # Portrait assets used by particle.html
 New-Item -ItemType Directory -Force -Path "dist\assets" | Out-Null
 Copy-Item -LiteralPath "assets\portrait.png" -Destination "dist\assets\portrait.png" -Force
+Copy-Item -LiteralPath "assets\portrait-particles.json" -Destination "dist\assets\portrait-particles.json" -Force
 
 # Campus data must ship too. heights.json travels with it so building heights can
 # be corrected later by editing that one file and redeploying -- no code change.
