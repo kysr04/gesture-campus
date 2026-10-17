@@ -201,6 +201,9 @@ const glCanvas = document.getElementById('gl');
 let THREE = null, renderer = null, scene = null, camera = null;
 let field = null, glow = null, aura = null;
 let grabMix = 0, grabTarget = 0, grabT = 0;
+let grabHeld = false;                       // 捏合滞后：避免临界抖动
+const pinchPoint = { x: 0.5, y: 0.5 };      // 拇指-食指捏合点（归一化图像坐标）
+const filterPinchX = { v: null }, filterPinchY = { v: null };
 let portraitMix = 0, portraitTarget = 0;
 
 async function loadThree(onStage){
@@ -240,14 +243,13 @@ function fieldMaterial(){
     vertexShader: `
       attribute float aSeed; attribute float aTint;
       attribute vec3 aTarget; attribute vec3 aColor; attribute float aEdge;
-      attribute vec3 aHeart;
       uniform float uTime;
       uniform vec3 uGrab; uniform vec3 uGrabAxis; uniform vec3 uGrabRight; uniform vec3 uGrabUp;
       uniform float uGrabR; uniform float uGrabK; uniform float uGrabT;
       uniform vec3 uPCenter; uniform vec3 uPRight; uniform vec3 uPUp; uniform vec3 uPNormal;
       uniform float uMorph; uniform float uDrift; uniform float uSize;
       varying float vShade; varying float vTint; varying float vWarm; varying float vPhoto; varying float vEdge;
-      varying float vSeed; varying float vHeartR;
+      varying float vSeed; varying float vHeartG;
       varying vec3 vColor;
 
       vec3 rotAxis(vec3 v, vec3 axis, float ang){
@@ -262,8 +264,9 @@ function fieldMaterial(){
         p.y += cos(t * 0.53) * 1.1;
         p.z += sin(t * 0.61 + 1.7) * 1.6;
 
-        // 抓取：半径内的粒子错开起跑，先后飞进手心里的一颗爱心。
+        // 抓取：半径内的粒子错开起跑，先后飞进手心里的一颗霓虹爱心。
         float grabW = 0.0;
+        vHeartG = 0.0;
         if (uGrabK > 0.001 && uMorph < 0.02) {
           vec3 q = p - uGrab;
           float gd = length(q);
@@ -276,15 +279,22 @@ function fieldMaterial(){
             vec3 axis = normalize(uGrabAxis);
             vec3 right = normalize(uGrabRight);
             vec3 upv = normalize(uGrabUp);
-            // 心跳：收拢后轻微呼吸
-            float pulse = 1.0 + 0.055 * sin(uTime * 2.4);
+            // 每颗粒子固定一个参数角，随时间沿心形轮廓流动
+            float hh = fract(sin(aSeed * 91.37) * 43758.5453);
+            float th = aSeed * 6.28318 + uTime * 0.55;
+            float hx = 16.0 * pow(sin(th), 3.0) / 17.0;
+            float hy = (13.0 * cos(th) - 5.0 * cos(2.0 * th) - 2.0 * cos(3.0 * th) - cos(4.0 * th)) / 17.0 + 0.18;
+            // 74% 的粒子贴在外轮廓，其余散在内部，像霓虹灯管 + 薄雾
+            float rr = hh < 0.74 ? (0.90 + hh / 0.74 * 0.10) : (0.12 + (hh - 0.74) / 0.26 * 0.62);
+            float pulse = 1.0 + 0.045 * sin(uTime * 2.4);
             vec3 heartW = uGrab
-              + (right * aHeart.x + upv * aHeart.y) * pulse
-              + axis * aHeart.z * pulse;
+              + (right * hx + upv * hy) * 2.3 * rr * pulse
+              + axis * ((hh - 0.5) * 0.45);
             // 飞行途中绕视线轻轻转一下，落进心形时有收束感
             vec3 swing = rotAxis(p - uGrab, axis, k * 0.5);
             p = uGrab + mix(swing, heartW - uGrab, k);
             grabW = k;
+            vHeartG = clamp(hy * 2.3 * rr / 2.4 + 0.5, 0.0, 1.0);
           }
         }
 
@@ -312,7 +322,6 @@ function fieldMaterial(){
         vPhoto = mp;
         vEdge = aEdge * mp;
         vSeed = aSeed;
-        vHeartR = length(aHeart.xy);
         vColor = aColor;
         float sz = clamp(150.0 / d, 1.2, 9.0) * (0.7 + aSeed * 0.6) * (1.0 - 0.30 * grabW);
         gl_PointSize = mix(sz, uSize * (0.6 + aSeed * 0.6), mp);
@@ -323,17 +332,16 @@ function fieldMaterial(){
       uniform float uOpacity; uniform vec3 cA; uniform vec3 cB; uniform vec3 cC;
       uniform float uPhotoGain; uniform float uTime; uniform float uTwinkle; uniform float uGrabK;
       varying float vShade; varying float vTint; varying float vWarm; varying float vPhoto; varying float vEdge;
-      varying vec3 vColor; varying float vSeed; varying float vHeartR;
+      varying vec3 vColor; varying float vSeed; varying float vHeartG;
       void main(){
         float r = length(gl_PointCoord - vec2(0.5));
         if (r > 0.5) discard;
         // 星云要软光点；人像要实心小点，边缘太软整张脸就会发灰
         float a = mix(smoothstep(0.5, 0.05, r), smoothstep(0.5, 0.33, r), vPhoto);
         vec3 col = mix(mix(cA, cB, vTint), cC, smoothstep(0.75, 1.0, vTint));
-        // 抓取 = 爱心：从心核的玫瑰红渐变到边缘的浅粉白
-        float g = clamp(vHeartR / 2.4, 0.0, 1.0);
-        vec3 rose = mix(vec3(1.0, 0.30, 0.46), vec3(1.0, 0.80, 0.88), g);
-        col = mix(col, rose, vWarm * 0.95);
+        // 抓取 = 霓虹爱心：底部玫瑰、顶部蓝青，双色渐变
+        vec3 heartCol = mix(vec3(1.0, 0.28, 0.50), vec3(0.25, 0.72, 1.0), vHeartG);
+        col = mix(col, heartCol, vWarm * 0.95);
         col = mix(col, vColor, vPhoto * 0.92);
         // 轮廓上偏冷白，人像就有了“光边”
         col = mix(col, vec3(0.62, 0.84, 1.0), vEdge * 0.15);
@@ -439,22 +447,6 @@ async function loadPortrait(n){
   return { target, color, edge: edgeAttr, planeW, planeH };
 }
 
-/** 心形目标点：参数化爱心曲线按随机半径填充，u 是右、v 是上、w 是厚度。 */
-function buildHeart(n){
-  const pos = new Float32Array(n * 3);
-  const S = 2.3;
-  for (let i = 0; i < n; i++) {
-    const th = Math.random() * Math.PI * 2;
-    const rr = 0.5 + 0.5 * Math.pow(Math.random(), 0.7);    // 柔和的实心，边缘稍亮
-    const hx = 16 * Math.pow(Math.sin(th), 3) / 17;
-    const hy = (13 * Math.cos(th) - 5 * Math.cos(2 * th) - 2 * Math.cos(3 * th) - Math.cos(4 * th)) / 17 + 0.18;
-    pos[i*3]   = hx * S * rr;
-    pos[i*3+1] = hy * S * rr;
-    pos[i*3+2] = (Math.random() - 0.5) * 0.4;
-  }
-  return pos;
-}
-
 function buildField(portrait){
   const n = CFG.particles;
   const pos = new Float32Array(n*3), seed = new Float32Array(n), tint = new Float32Array(n);
@@ -472,7 +464,6 @@ function buildField(portrait){
   g.setAttribute('position', new THREE.BufferAttribute(pos,3));
   g.setAttribute('aSeed', new THREE.BufferAttribute(seed,1));
   g.setAttribute('aTint', new THREE.BufferAttribute(tint,1));
-  g.setAttribute('aHeart', new THREE.BufferAttribute(buildHeart(n), 3));
   if (portrait) {
     g.setAttribute('aTarget', new THREE.BufferAttribute(portrait.target, 3));
     g.setAttribute('aColor', new THREE.BufferAttribute(portrait.color, 3));
@@ -584,12 +575,22 @@ function applyCamera(dt, elapsed){
   else if (grabMix < 0.02) grabT = 0;
   if (DEBUG_GRAB_HOLD) { grabMix = 1; grabT = 3; }
 
-  const grabPoint = camera.position.clone().addScaledVector(dir, CFG.grabAhead);
   const fu = field.material.uniforms;
-  fu.uGrab.value.copy(grabPoint);
   fu.uGrabAxis.value.copy(dir);
-  fu.uGrabRight.value.copy(new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0));
-  fu.uGrabUp.value.copy(new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1));
+  const grRight = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  const grUp = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+  fu.uGrabRight.value.copy(grRight);
+  fu.uGrabUp.value.copy(grUp);
+  // 爱心跟手：把捏合点从图像坐标换算成相机前方的一个偏移
+  const ndcX = (pinchPoint.x - 0.5) * 2;
+  const ndcY = (0.5 - pinchPoint.y) * 2;
+  const halfH = CFG.grabAhead * Math.tan(31 * Math.PI / 180);
+  const halfW = halfH * camera.aspect;
+  const grabPoint = camera.position.clone()
+    .addScaledVector(dir, CFG.grabAhead)
+    .addScaledVector(grRight, ndcX * halfW)
+    .addScaledVector(grUp, ndcY * halfH);
+  fu.uGrab.value.copy(grabPoint);
   fu.uGrabK.value = grabMix;
   fu.uGrabT.value = grabT;
   fu.uGrabR.value = CFG.grabRadius;
@@ -655,6 +656,8 @@ function stepHands(hands, now, dt){
     lostCount++;
     if (lostCount === CFG.lostFrames) { prevPalm = null; moveBuf = []; }
     grabTarget = DEBUG_GRAB ? 1 : 0;
+    grabHeld = false;
+    pinchPoint.x = 0.5; pinchPoint.y = 0.5;
     if (portraitOn) {
       if (!lostAt) lostAt = now;
       if (now - lostAt >= CFG.portraitLostMs) { portraitOn = false; portraitTarget = 0; }
@@ -670,6 +673,8 @@ function stepHands(hands, now, dt){
   const main = hands[0];
   const p = palm(main);
   const f = fingers(main);
+  pinchPoint.x = oneEuro(filterPinchX, (main[4].x + main[8].x) / 2, dt);
+  pinchPoint.y = oneEuro(filterPinchY, (main[4].y + main[8].y) / 2, dt);
 
   // 手数变化时重建基准：(1) 手序可能翻转 (2) 换手后位移会突然很大
   if (hands.length !== stepHands.lastCount) {
@@ -743,7 +748,9 @@ function stepHands(hands, now, dt){
 
   // 捏合 = 抓取。指距比越小捏得越紧。
   const pinch = clamp((CFG.pinchOpen - f.pinch) / (CFG.pinchOpen - CFG.pinchShut), 0, 1);
-  grabTarget = portraitOn ? 0 : (pinch > 0.55 ? pinch : 0);
+  if (!grabHeld && pinch > 0.62) grabHeld = true;
+  else if (grabHeld && pinch < 0.36) grabHeld = false;
+  grabTarget = portraitOn ? 0 : (grabHeld ? 1 : 0);
   if (DEBUG_GRAB) grabTarget = 1;      // 调试用：?grab=1 强制抓取，方便无手时看效果
 
   if (portraitOn) setLabel('人像 · 放下手散开', '#c9b3ff');
