@@ -115,8 +115,7 @@ const CFG = {
 const PORTRAIT = {
   url: './assets/portrait.png',
   height: 7.2,             // 在世界里的高度
-  ahead: 8.6,              // 摆在相机前方多远
-  photoAlpha: 0.80
+  ahead: 8.6               // 摆在相机前方多远
 };
 
 const TM_URLS = [
@@ -191,7 +190,6 @@ const stage = document.getElementById('stage');
 const glCanvas = document.getElementById('gl');
 let THREE = null, renderer = null, scene = null, camera = null;
 let field = null, glow = null;
-let photoMesh = null, photoMat = null;
 let grabMix = 0, grabTarget = 0, grabT = 0;
 let portraitMix = 0, portraitTarget = 0;
 
@@ -219,8 +217,7 @@ function fieldMaterial(){
       uPRight: { value: new THREE.Vector3(1,0,0) },
       uPUp: { value: new THREE.Vector3(0,1,0) },
       uPNormal: { value: new THREE.Vector3(0,0,1) },
-      uPhotoGain: { value: 0.62 },                       // 人像态粒子的不透明度（叠加混合容易过曝）
-      uPlaneFade: { value: 0 },                          // 照片底图淡入到多少（0 时粒子自己发光）
+      uPhotoGain: { value: 0.85 },                       // 人像态粒子的不透明度
       cA: { value: new THREE.Color(0x9fe8ff) },
       cB: { value: new THREE.Color(0x6f9dff) },
       cC: { value: new THREE.Color(0xd6c4ff) }
@@ -234,6 +231,7 @@ function fieldMaterial(){
       uniform vec3 uPCenter; uniform vec3 uPRight; uniform vec3 uPUp; uniform vec3 uPNormal;
       uniform float uMorph;
       varying float vShade; varying float vTint; varying float vWarm; varying float vPhoto; varying float vEdge;
+      varying float vSeed;
       varying vec3 vColor;
 
       vec3 rotAxis(vec3 v, vec3 axis, float ang){
@@ -299,37 +297,38 @@ function fieldMaterial(){
         vWarm = grabW;
         vPhoto = mp;
         vEdge = aEdge * mp;
+        vSeed = aSeed;
         vColor = aColor;
         float sz = clamp(150.0 / d, 1.2, 9.0) * (0.7 + aSeed * 0.6) * (1.0 - 0.50 * grabW);
-        gl_PointSize = mix(sz, 2.0 * (0.6 + aSeed * 0.65) * (1.0 + aEdge * 0.5), mp);
+        gl_PointSize = mix(sz, 3.8 * (0.8 + aSeed * 0.35), mp);
         gl_PointSize *= 1.0 + sin(3.14159 * mp) * 0.55;   // 飞行途中更大，聚拢过程才看得见
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
       uniform float uOpacity; uniform vec3 cA; uniform vec3 cB; uniform vec3 cC;
-      uniform float uPhotoGain; uniform float uPlaneFade;
+      uniform float uPhotoGain; uniform float uTime;
       varying float vShade; varying float vTint; varying float vWarm; varying float vPhoto; varying float vEdge;
-      varying vec3 vColor;
+      varying vec3 vColor; varying float vSeed;
       void main(){
         float r = length(gl_PointCoord - vec2(0.5));
         if (r > 0.5) discard;
-        float a = smoothstep(0.5, 0.05, r);
+        // 星云要软光点；人像要实心小点，边缘太软整张脸就会发灰
+        float a = mix(smoothstep(0.5, 0.05, r), smoothstep(0.5, 0.33, r), vPhoto);
         vec3 col = mix(mix(cA, cB, vTint), cC, smoothstep(0.75, 1.0, vTint));
         // 被抓住的粒子往暖白偏，聚成球时核心才有"发光"的感觉
         col = mix(col, vec3(1.0, 0.94, 0.80), vWarm * 0.55);
         col = mix(col, vColor, vPhoto * 0.92);
         // 轮廓上偏冷白，人像就有了“光边”
-        col = mix(col, vec3(0.62, 0.84, 1.0), vEdge * 0.35);
-        // 半路发蓝白光：先是一团光，最后才落成照片
+        col = mix(col, vec3(0.62, 0.84, 1.0), vEdge * 0.15);
+        // 半路发蓝白光：先是一团光，最后才落成五官
         float transit = sin(3.14159 * vPhoto);
         col = mix(col, vec3(0.58, 0.80, 1.0), transit * 0.55);
-        // 照片还没盖上来之前，已经落位的粒子保持冷白光，
-        // 不然深色头发和黑衣服在纯黑背景上等于不存在
-        float glow = vPhoto * (1.0 - uPlaneFade);
-        col = mix(col, vec3(0.66, 0.86, 1.0), glow * 0.8);
         float alpha = a * vShade * uOpacity * (1.0 - 0.38 * vWarm);
-        alpha *= mix(1.0, uPhotoGain, vPhoto) * (1.0 + vEdge * 0.45)
-               * (1.0 + transit * 0.55) * (1.0 + glow * 0.35);
+        alpha *= mix(1.0, uPhotoGain, vPhoto) * (1.0 + vEdge * 0.25)
+               * (1.0 + transit * 0.55);
+        // 人像态每颗粒子自己呼吸，整张脸才会"活"起来
+        float tw = 0.86 + 0.14 * sin(uTime * 2.4 + vSeed * 62.83);
+        alpha *= mix(1.0, tw, vPhoto);
         gl_FragColor = vec4(col, alpha);
       }`,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
@@ -346,32 +345,54 @@ async function loadPortrait(n){
   img.src = PORTRAIT.url;
   await img.decode();
 
-  const W = 380;
+  const W = 420;
   const H = Math.round(W * img.naturalHeight / img.naturalWidth);
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const x = c.getContext('2d', { willReadFrequently: true });
   x.drawImage(img, 0, 0, W, H);
   const px = x.getImageData(0, 0, W, H).data;
+  const N = W * H;
 
-  // 人像边缘：用 alpha 的梯度找轮廓，轮廓上的粒子会更亮更大
-  const alpha = new Uint8Array(W * H);
-  for (let i = 0; i < W * H; i++) alpha[i] = px[i*4+3];
-  const edge = new Float32Array(W * H);
+  // 亮度和轮廓：五官都长在明暗变化剧烈的地方，
+  // 按这个权重撒点，脸才不会糊成一坨均匀的雾
+  const alpha = new Uint8Array(N);
+  const lum = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const p = i * 4;
+    alpha[i] = px[p + 3];
+    lum[i] = (0.299*px[p] + 0.587*px[p+1] + 0.114*px[p+2]) / 255;
+  }
+  const edge = new Float32Array(N);
   for (let yy = 1; yy < H-1; yy++) {
     for (let xx = 1; xx < W-1; xx++) {
       const i = yy*W + xx;
-      const gx = Math.abs(alpha[i+1] - alpha[i-1]);
-      const gy = Math.abs(alpha[i+W] - alpha[i-W]);
-      edge[i] = Math.min(1, (gx + gy) / 220);
+      const gx = Math.abs(lum[i+1] - lum[i-1]);
+      const gy = Math.abs(lum[i+W] - lum[i-W]);
+      const ax = Math.abs(alpha[i+1] - alpha[i-1]) / 255;
+      const ay = Math.abs(alpha[i+W] - alpha[i-W]) / 255;
+      edge[i] = Math.min(1, gx + gy + (ax + ay) * 1.6);
     }
   }
 
   const cand = [];
-  for (let i = 0, p = 0; i < W * H; i++, p += 4) {
+  const cum = [];
+  let total = 0;
+  for (let i = 0, p = 0; i < N; i++, p += 4) {
     if (px[p + 3] > 60) cand.push(i);
+    if (px[p + 3] > 60) {
+      // 均匀撒点：点阵的密度一致，明暗全部交给每颗粒子自己的颜色，
+      // 这样才是一张"由粒子拼成的人像"，而不是一堆明暗不均的雾
+      total += 1;
+      cum.push(total);
+    }
   }
   if (!cand.length) throw new Error('人像没有可用的像素');
+  const pick = (r) => {
+    let lo = 0, hi = cum.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (cum[mid] < r) lo = mid + 1; else hi = mid; }
+    return cand[lo];
+  };
 
   const planeH = PORTRAIT.height;
   const planeW = planeH * W / H;
@@ -381,23 +402,20 @@ async function loadPortrait(n){
   const jx = planeW / W, jy = planeH / H;
 
   for (let i = 0; i < n; i++) {
-    const k = cand[(Math.random() * cand.length) | 0];
+    const k = pick(Math.random() * total);
     const sx = k % W, sy = (k / W) | 0;
     target[i*3]   = (sx / W - 0.5) * planeW + (Math.random() - 0.5) * jx;
     target[i*3+1] = -(sy / H - 0.5) * planeH + (Math.random() - 0.5) * jy;
-    // 大部分粒子贴在照片后面，少量浮在前面当"浮尘"，
-    // 这样脸不会被点阵糊住，又保留粒子感
-    target[i*3+2] = Math.random() < 0.8
-      ? -(0.05 + Math.random() * 0.45)
-      : (0.45 + Math.random() * 0.95);
+    // 有厚度的一层，转头时能看出是立体的粒子云
+    target[i*3+2] = (Math.random() - 0.5) * 0.9;
     edgeAttr[i] = edge[k];
     const p = k * 4;
-    // 着色器输出的是线性色，照片是 sRGB，这里先转一下
+    // 直接用照片本身的颜色，靠点阵把画面拼出来
     color[i*3]   = Math.pow(px[p]   / 255, 2.2);
     color[i*3+1] = Math.pow(px[p+1] / 255, 2.2);
     color[i*3+2] = Math.pow(px[p+2] / 255, 2.2);
   }
-  return { target, color, edge: edgeAttr, img, planeW, planeH };
+  return { target, color, edge: edgeAttr, planeW, planeH };
 }
 
 function buildField(portrait){
@@ -481,20 +499,6 @@ async function buildScene(onStage){
   glow = buildGlow();
   scene.add(glow);
 
-  if (portrait) {
-    const tex = new THREE.Texture(portrait.img);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.needsUpdate = true;
-    photoMat = new THREE.MeshBasicMaterial({
-      map: tex, transparent: true, opacity: 0, depthTest: false, depthWrite: false, toneMapped: false
-    });
-    photoMesh = new THREE.Mesh(new THREE.PlaneGeometry(portrait.planeW, portrait.planeH), photoMat);
-    photoMesh.renderOrder = 6;
-    photoMesh.frustumCulled = false;
-    photoMesh.visible = false;
-    scene.add(photoMesh);
-  }
-
   resize();
   window.addEventListener('resize', resize);
   window.addEventListener('orientationchange', ()=> setTimeout(resize, 250));
@@ -548,36 +552,25 @@ function applyCamera(dt, elapsed){
     glow.material.color.setRGB(0.72 + 0.28*grabMix, 0.86 + 0.12*grabMix, 1.0);
   }
 
-  // 人像：粒子按自己的节奏飞过去，聚拢大半之后照片再盖上来
+  // 人像：粒子按自己的节奏飞过去，最后全靠粒子自己堆出五官
   portraitMix = smoothTo(portraitMix, portraitTarget, portraitTarget > 0 ? 3.4 : 3.2, dt);
   if (DEBUG_PORTRAIT) portraitMix = 1;
   if (!Number.isNaN(DEBUG_MORPH)) portraitMix = DEBUG_MORPH;
   fu.uMorph.value = portraitMix;
-  // 星云用叠加混合才有光感，但照片需要正常混合，不然眼睛、眉毛这些
-  // 暗部在叠加下根本压不下去，脸会糊成一团亮斑。
-  const wantNormal = portraitMix > 0.52;
+  // 星云用叠加混合才有光感；人像要保留暗部（眼睛、眉毛），得换成正常混合，
+  // 否则暗的点在加法里等于不存在，脸会糊成一团亮斑。
+  const wantNormal = portraitMix > 0.5;
   if (field.material.blending !== (wantNormal ? THREE.NormalBlending : THREE.AdditiveBlending)) {
     field.material.blending = wantNormal ? THREE.NormalBlending : THREE.AdditiveBlending;
-    fu.uPhotoGain.value = wantNormal ? 0.92 : 0.62;
+    fu.uPhotoGain.value = wantNormal ? 1.0 : 0.85;
   }
-  if (photoMesh) {
-    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
-    const upv = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
-    const fwd = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 2).negate();
-    const center = camera.position.clone().addScaledVector(fwd, PORTRAIT.ahead);
-    fu.uPCenter.value.copy(center);
-    fu.uPRight.value.copy(right);
-    fu.uPUp.value.copy(upv);
-    fu.uPNormal.value.copy(fwd).negate();   // 正方向朝相机：粒子浮在照片前面
-
-    photoMesh.position.copy(center);
-    photoMesh.quaternion.copy(camera.quaternion);
-    photoMesh.visible = portraitMix > 0.01;
-    const t = clamp((portraitMix - 0.68) / 0.30, 0, 1);
-    const eased = t * t * (3 - 2 * t);
-    photoMat.opacity = eased * PORTRAIT.photoAlpha;
-    fu.uPlaneFade.value = eased;
-  }
+  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  const upv = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+  const fwd = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 2).negate();
+  fu.uPCenter.value.copy(camera.position).addScaledVector(fwd, PORTRAIT.ahead);
+  fu.uPRight.value.copy(right);
+  fu.uPUp.value.copy(upv);
+  fu.uPNormal.value.copy(fwd).negate();
   renderer.render(scene, camera);
 }
 
