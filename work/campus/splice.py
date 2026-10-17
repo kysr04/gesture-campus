@@ -4,11 +4,13 @@
 替换前后都做边界断言，防止行号漂移导致改错地方。
 """
 import os
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 INDEX = os.path.join(ROOT, "index.html")
-SCENE = os.path.join(HERE, "scene.js")
+# 用法: python splice.py [场景文件路径]  默认用同目录的 campus 场景
+SCENE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "scene.js")
 
 START_MARK = "/* ============================== 场景"
 

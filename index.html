@@ -121,19 +121,19 @@
     </div>
     <div id="pinch-wrap">手掌张开度<div id="pinch-bar"><div id="pinch-fill"></div></div></div>
     <div id="help">
-      <b>单手拖动</b> 旋转地球<br>
-      <b>一只手张开手掌</b> 另一只手拉近推远<br>
-      <b>比 1/2/3/4</b> 跳到预设视角<br>
-      <b>手心侧倾</b> 地轴跟着倾<br>
-      <b>两只手</b> 缩放 + 旋转<br>
-      <b>手离开画面</b> 冻结
+      <b>手掌平移</b> 在粒子海里穿行<br>
+      <b>捏合手指</b> 抓起一团粒子<br>
+      <b>张开手指</b> 放掉<br>
+      <b>两只手</b> 前后推进 / 后退<br>
+      <b>比 1/2/3/4</b> 跳到四个位置<br>
+      <b>手离开画面</b> 滑行后停住
     </div>
   </aside>
 
   <main id="globe-panel">
     <div id="globe"></div>
     <div id="tip"></div>
-    <div id="hud">手势地球 · <strong id="hud-city">鼠标拖动可旋转</strong></div>
+<div id="hud">粒子手势 · <strong id="hud-city">捏合抓取，手掌平移飞行</strong></div>
   </main>
 </div>
 
@@ -204,7 +204,9 @@ const VIS = {
 
 // 手势参数。手感不好就改这里，别去改算法。
 const GESTURE = {
-  ALT_MIN: 0.6, ALT_MAX: 3.0,
+  // 粒子场景里相机轨道半径 = 9 + altitude * 18
+  ALT_MIN: 0.05,             // 约半径 10，贴着粒子飞
+  ALT_MAX: 2.0,              // 约半径 45，接近云层边缘
   PITCH_LIMIT: 80,           // 度
   // 增益单位是"每移动一个手掌宽度转多少度"。手掌宽度约是画面宽的 1/6，
   // 所以 60 意味着手掌横扫半个画面约转 200 度。
@@ -238,27 +240,16 @@ const GESTURE = {
   REACQUIRE_SEC: 0.15        // 手回来后的增益渐入时长
 };
 
-// 四个预设视角，对应比 1/2/3/4 根手指
+// 粒子场里的四个位置，对应比 1/2/3/4 根手指。
+// altitude 越小相机越靠里，穿过粒子时视差越强。
 const VIEWS = [
-  { name: 'asia',    label: '亚洲',   yaw: 105, pitch: 25,  altitude: 2.4 },
-  { name: 'europe',  label: '欧洲',   yaw: 15,  pitch: 50,  altitude: 2.4 },
-  { name: 'america', label: '美洲',   yaw: -90, pitch: 30,  altitude: 2.4 },
-  { name: 'oceania', label: '大洋洲', yaw: 145, pitch: -25, altitude: 2.4 }
+  { name: 'front', label: '正面', yaw: 0,   pitch: 0,  altitude: 0.35 },
+  { name: 'deep',  label: '深入', yaw: 120, pitch: 12, altitude: 0.08 },
+  { name: 'above', label: '俯瞰', yaw: 240, pitch: 45, altitude: 0.55 },
+  { name: 'far',   label: '外围', yaw: 300, pitch: -8, altitude: 1.60 }
 ];
 
-const CITIES = [
-  ['北京', 39.9042, 116.4074], ['上海', 31.2304, 121.4737], ['香港', 22.3193, 114.1694],
-  ['东京', 35.6762, 139.6503], ['首尔', 37.5665, 126.9780], ['新加坡', 1.3521, 103.8198],
-  ['曼谷', 13.7563, 100.5018], ['孟买', 19.0760, 72.8777], ['迪拜', 25.2048, 55.2708],
-  ['伊斯坦布尔', 41.0082, 28.9784], ['莫斯科', 55.7558, 37.6173], ['开罗', 30.0444, 31.2357],
-  ['内罗毕', -1.2921, 36.8219], ['开普敦', -33.9249, 18.4241], ['伦敦', 51.5074, -0.1278],
-  ['巴黎', 48.8566, 2.3522], ['柏林', 52.5200, 13.4050], ['马德里', 40.4168, -3.7038],
-  ['罗马', 41.9028, 12.4964], ['阿姆斯特丹', 52.3676, 4.9041], ['纽约', 40.7128, -74.0060],
-  ['洛杉矶', 34.0522, -118.2437], ['芝加哥', 41.8781, -87.6298], ['多伦多', 43.6532, -79.3832],
-  ['墨西哥城', 19.4326, -99.1332], ['圣保罗', -23.5505, -46.6333],
-  ['布宜诺斯艾利斯', -34.6037, -58.3816], ['利马', -12.0464, -77.0428],
-  ['悉尼', -33.8688, 151.2093], ['奥克兰', -36.8485, 174.7633]
-];
+// 城市列表已经不用了：场景换成了粒子场
 
 // 手部关键点索引（MediaPipe 21 点）
 const HAND = {
@@ -756,7 +747,7 @@ function setStatus(state, label, sub) {
   $statusSub.textContent = sub;
 }
 
-/* ============================== 场景 ====================================== */
+/* ============================== 粒子场景 ================================== */
 
 async function loadThree(onStage) {
   let lastErr = null;
@@ -769,216 +760,128 @@ async function loadThree(onStage) {
   throw lastErr || new Error('three.js 加载失败');
 }
 
-/** 球面坐标 → 单位向量。经度 0 指向 +Z。 */
-function sph(THREE, latDeg, lonDeg, r = 1) {
-  const la = latDeg * Math.PI / 180, lo = lonDeg * Math.PI / 180;
-  return new THREE.Vector3(
-    r * Math.cos(la) * Math.sin(lo),
-    r * Math.sin(la),
-    r * Math.cos(la) * Math.cos(lo)
-  );
-}
+const FIELD = {
+  COUNT: 26000,
+  R_MIN: 26,               // 云的内半径。相机轨道最大只有 48，所以永远在云里面，
+  R_MAX: 130,              // 这样平移才会产生"穿过粒子"的视差，而不是"看着一团东西转"
+  ORBIT_BASE: 9,
+  ORBIT_GAIN: 18,
+  GRAB_COUNT: 420,
+  GRAB_DIST: 6,
+  COLOR_A: 0x9fe8ff,
+  COLOR_B: 0x7aa8ff,
+  COLOR_C: 0xd8c6ff,
+  DPR_LIMIT: 2
+};
 
-/**
- * 陆地点云。
- *
- * 必须用斐波那契球面采样，不要按经纬度铺格子——经纬格子在两极会退化成
- * 同心波纹，看起来像渲染 bug。（上一版就是这么踩的。）
- */
-async function landGeometry(THREE) {
-  const loader = new THREE.TextureLoader();
-  loader.setCrossOrigin('anonymous');
-  const tex = await loader.loadAsync(EARTH_TEXTURE_URL);
-  const src = tex.image;
-
-  const W = 1440, H = 720;
-  const cv = document.createElement('canvas');
-  cv.width = W; cv.height = H;
-  const ctx = cv.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(src, 0, 0, W, H);
-  const px = ctx.getImageData(0, 0, W, H).data;
-
-  const pos = [];
-  const golden = Math.PI * (3 - Math.sqrt(5));
-  const count = VIS.LAND_SAMPLES;
-  for (let i = 0; i < count; i++) {
-    const yy = 1 - (i / (count - 1)) * 2;
-    const rad = Math.sqrt(Math.max(0, 1 - yy * yy));
-    const th = golden * i;
-    const xx = rad * Math.cos(th);
-    const zz = rad * Math.sin(th);
-    const lat = Math.asin(yy) * 180 / Math.PI;
-    const lon = Math.atan2(xx, zz) * 180 / Math.PI;
-    const cx = Math.min(W - 1, Math.max(0, Math.floor((lon + 180) / 360 * W)));
-    const cy = Math.min(H - 1, Math.max(0, Math.floor((90 - lat) / 180 * H)));
-    const k = (cy * W + cx) * 4;
-    if (px[k + 2] - px[k] > 20 && px[k + 2] - px[k + 1] > 12) continue;   // 海洋
-    pos.push(xx * VIS.LAND_RADIUS, yy * VIS.LAND_RADIUS, zz * VIS.LAND_RADIUS);
-  }
-
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  return g;
-}
-
-function makeStars(THREE) {
-  const pos = new Float32Array(VIS.STAR_COUNT * 3);
-  for (let i = 0; i < VIS.STAR_COUNT; i++) {
-    const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
-    const r = Math.sqrt(Math.max(0, 1 - u * u));
-    pos[i * 3] = r * Math.cos(th) * VIS.STAR_RADIUS;
-    pos[i * 3 + 1] = u * VIS.STAR_RADIUS;
-    pos[i * 3 + 2] = r * Math.sin(th) * VIS.STAR_RADIUS;
+/** 粒子场。位置一次性生成，流动和闪烁在着色器里做，CPU 每帧零开销。 */
+function buildField(THREE) {
+  const n = FIELD.COUNT;
+  const pos = new Float32Array(n * 3);
+  const seed = new Float32Array(n);
+  const tint = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const u = Math.random() * 2 - 1;
+    const th = Math.random() * Math.PI * 2;
+    const rr = Math.sqrt(Math.max(0, 1 - u * u));
+    const R = FIELD.R_MIN + Math.pow(Math.random(), 0.65) * (FIELD.R_MAX - FIELD.R_MIN);
+    pos[i * 3] = rr * Math.cos(th) * R;
+    pos[i * 3 + 1] = u * R * 0.55;          // 压扁成片状，飞行时更像穿过星云
+    pos[i * 3 + 2] = rr * Math.sin(th) * R;
+    seed[i] = Math.random();
+    tint[i] = Math.random();
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  return new THREE.Points(g, new THREE.PointsMaterial({
-    color: 0xbdd2ff, size: VIS.STAR_SIZE, sizeAttenuation: true,
-    transparent: true, opacity: 0.85, depthWrite: false
-  }));
+  g.setAttribute('aSeed', new THREE.BufferAttribute(seed, 1));
+  g.setAttribute('aTint', new THREE.BufferAttribute(tint, 1));
+  return g;
 }
 
-function makeGraticules(THREE, color, step, opacity, radius) {
-  const verts = [];
-  const push = (a, b) => { verts.push(a.x, a.y, a.z, b.x, b.y, b.z); };
-  for (let lon = -180; lon < 180; lon += step) {
-    for (let lat = -90; lat < 90; lat += 4) push(sph(THREE, lat, lon, radius), sph(THREE, lat + 4, lon, radius));
-  }
-  for (let lat = -75; lat <= 75; lat += step) {
-    for (let lon = -180; lon < 180; lon += 4) push(sph(THREE, lat, lon, radius), sph(THREE, lat, lon + 4, radius));
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({
-    color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false
-  }));
-}
-
-/** 菲涅尔壳：只在球的边缘发光，用来给玻璃球一个轮廓。 */
-function makeFresnel(THREE, color, power, strength, scale) {
-  const mat = new THREE.ShaderMaterial({
+function fieldMaterial(THREE) {
+  return new THREE.ShaderMaterial({
     uniforms: {
-      uColor: { value: new THREE.Color(color) },
-      uPower: { value: power },
-      uStrength: { value: strength }
+      uTime: { value: 0 },
+      uOpacity: { value: 1 },
+      cA: { value: new THREE.Color(FIELD.COLOR_A) },
+      cB: { value: new THREE.Color(FIELD.COLOR_B) },
+      cC: { value: new THREE.Color(FIELD.COLOR_C) }
     },
     vertexShader: `
-      varying vec3 vN; varying vec3 vP;
+      attribute float aSeed;
+      attribute float aTint;
+      uniform float uTime;
+      varying float vShade;
+      varying float vTint;
       void main() {
-        vN = normalize(normalMatrix * normal);
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        vP = mv.xyz;
+        vec3 p = position;
+        float t = uTime * 0.35 + aSeed * 6.283;
+        p.x += sin(t * 0.70) * 1.6;
+        p.y += cos(t * 0.53) * 1.1;
+        p.z += sin(t * 0.61 + 1.7) * 1.6;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        float d = -mv.z;
+        vShade = clamp(1.0 - (d - 20.0) / 150.0, 0.12, 1.0);
+        vTint = aTint;
+        gl_PointSize = clamp(120.0 / d, 1.0, 7.0) * (0.7 + aSeed * 0.6);
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
-      uniform vec3 uColor; uniform float uPower; uniform float uStrength;
-      varying vec3 vN; varying vec3 vP;
+      uniform float uOpacity;
+      uniform vec3 cA; uniform vec3 cB; uniform vec3 cC;
+      varying float vShade;
+      varying float vTint;
       void main() {
-        float f = pow(1.0 - abs(dot(normalize(vN), normalize(-vP))), uPower);
-        gl_FragColor = vec4(uColor, 1.0) * f * uStrength;
+        float r = length(gl_PointCoord - vec2(0.5));
+        if (r > 0.5) discard;
+        float a = smoothstep(0.5, 0.05, r);
+        vec3 col = mix(mix(cA, cB, vTint), cC, smoothstep(0.75, 1.0, vTint));
+        gl_FragColor = vec4(col, a * vShade * uOpacity);
       }`,
-    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
   });
-  return new THREE.Mesh(new THREE.SphereGeometry(scale, VIS.RIM_SEG[0], VIS.RIM_SEG[1]), mat);
-}
-
-function makeRings(THREE) {
-  const group = new THREE.Group();
-  for (const [tilt, radius, opacity] of VIS.RINGS) {
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(radius, 0.0035, VIS.RING_SEG[0], VIS.RING_SEG[1]),
-      new THREE.MeshBasicMaterial({
-        color: 0x7feaff, transparent: true, opacity,
-        blending: THREE.AdditiveBlending, depthWrite: false
-      })
-    );
-    ring.rotation.set(Math.PI / 2 + tilt, 0, tilt * 1.4);
-    group.add(ring);
-  }
-  return group;
-}
-
-/** 城市金色光点。辉光精灵是程序生成的径向渐变，不需要图片。 */
-function makeCities(THREE) {
-  const sprite = (() => {
-    const c = document.createElement('canvas');
-    c.width = c.height = 64;
-    const g = c.getContext('2d');
-    const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-    grd.addColorStop(0.00, 'rgba(255,255,255,1)');
-    grd.addColorStop(0.12, 'rgba(255,246,225,1)');
-    grd.addColorStop(0.30, 'rgba(255,214,120,.55)');
-    grd.addColorStop(0.55, 'rgba(255,190,90,.12)');
-    grd.addColorStop(1.00, 'rgba(255,180,60,0)');
-    g.fillStyle = grd;
-    g.fillRect(0, 0, 64, 64);
-    const t = new THREE.CanvasTexture(c);
-    t.needsUpdate = true;
-    return t;
-  })();
-
-  const pos = [];
-  const world = [];
-  for (const [name, lat, lon] of CITIES) {
-    const v = sph(THREE, lat, lon, VIS.CITY_RADIUS);
-    pos.push(v.x, v.y, v.z);
-    world.push({ name, pos: v });
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  const points = new THREE.Points(g, new THREE.PointsMaterial({
-    size: VIS.CITY_SIZE, map: sprite, transparent: true, depthWrite: false,
-    blending: THREE.AdditiveBlending, color: 0xffffff, alphaTest: 0.01
-  }));
-  return { points, world };
 }
 
 async function createScene(container, onStage) {
   const THREE = await loadThree(onStage);
 
-  const renderer = new THREE.WebGLRenderer({
-    antialias: true, alpha: false, powerPreference: 'high-performance'
-  });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, VIS.DPR_LIMIT));
-  renderer.setClearColor(0x04060c, 1);
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, FIELD.DPR_LIMIT));
+  renderer.setClearColor(0x04060e, 1);
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 400);
-  const globeGroup = new THREE.Group();
-  scene.add(globeGroup);
+  const camera = new THREE.PerspectiveCamera(62, 1, 0.5, 4000);
 
-  const stars = makeStars(THREE);
-  scene.add(stars);
+  const geo = buildField(THREE);
+  const mat = fieldMaterial(THREE);
+  scene.add(new THREE.Points(geo, mat));
 
-  const landGeo = await landGeometry(THREE);
-  globeGroup.add(new THREE.Points(landGeo, new THREE.PointsMaterial({
-    color: VIS.LAND_COLOR, size: VIS.LAND_SIZE, sizeAttenuation: true,
-    transparent: true, opacity: 1, depthWrite: false
-  })));
-
-  // 玻璃壳：只是极淡一层膜
-  globeGroup.add(new THREE.Mesh(
-    new THREE.SphereGeometry(VIS.SHELL_RADIUS, VIS.SHELL_SEG[0], VIS.SHELL_SEG[1]),
-    new THREE.MeshBasicMaterial({
-      color: 0x2ad4ff, transparent: true, opacity: VIS.SHELL_OPACITY, depthWrite: false
-    })
-  ));
-
-  globeGroup.add(makeGraticules(THREE, VIS.GRID_COLOR, VIS.GRID_STEP, VIS.GRID_OPACITY, 1.003));
-
-  const cities = makeCities(THREE);
-  globeGroup.add(cities.points);
-
-  scene.add(makeFresnel(THREE, VIS.RIM_COLOR, VIS.RIM_POWER, VIS.RIM_STRENGTH, VIS.RIM_SCALE));
-  scene.add(makeRings(THREE));
+  // 捏合抓起来的那一团：单独一组点，位置跟着相机前方走
+  const grabGeo = new THREE.BufferGeometry();
+  const grabPos = new Float32Array(FIELD.GRAB_COUNT * 3);
+  const grabSeed = new Float32Array(FIELD.GRAB_COUNT);
+  for (let i = 0; i < FIELD.GRAB_COUNT; i++) {
+    const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
+    const rr = Math.sqrt(Math.max(0, 1 - u * u));
+    grabPos[i * 3] = rr * Math.cos(th) * 3;
+    grabPos[i * 3 + 1] = u * 3;
+    grabPos[i * 3 + 2] = rr * Math.sin(th) * 3;
+    grabSeed[i] = Math.random();
+  }
+  grabGeo.setAttribute('position', new THREE.BufferAttribute(grabPos, 3));
+  grabGeo.setAttribute('aSeed', new THREE.BufferAttribute(grabSeed, 1));
+  grabGeo.setAttribute('aTint', new THREE.BufferAttribute(grabSeed.slice(), 1));
+  const grabMat = fieldMaterial(THREE);
+  grabMat.uniforms.uOpacity.value = 0;
+  const grabPoints = new THREE.Points(grabGeo, grabMat);
+  grabPoints.frustumCulled = false;
+  scene.add(grabPoints);
 
   function resize() {
     const w = container.clientWidth || 1;
     const h = container.clientHeight || 1;
-    // 第三参数必须是 true（默认值）。传 false 表示"别动 canvas 的 CSS 尺寸"，
-    // 那样在 2 倍屏（iPad）上 canvas 会按设备像素尺寸显示，比容器大一倍，
-    // 用户只能看到左上角四分之一。桌面是 1 倍屏，所以截图里看不出这个问题。
+    // 第三参数必须是 true，否则 2 倍屏上 canvas 会按设备像素显示、比容器大一倍
     renderer.setSize(w, h, true);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
@@ -987,57 +890,56 @@ async function createScene(container, onStage) {
   window.addEventListener('resize', resize);
   window.addEventListener('orientationchange', () => setTimeout(resize, 250));
 
-  /** 把视角状态套到相机和地球组上。这是渲染层唯一的入口。 */
+  const camDir = new THREE.Vector3();
+  const lookTarget = new THREE.Vector3(0, 0, 0);
+  let grabMix = 0;
+  let grabAmount = 0;
+
   function apply(s) {
-    const r = 1 + s.altitude;
-    const lat = s.pitch * Math.PI / 180;
-    const lon = s.yaw * Math.PI / 180;
+    const r = FIELD.ORBIT_BASE + s.altitude * FIELD.ORBIT_GAIN;
+    const yawRad = s.yaw * Math.PI / 180;
+    const pitchRad = clamp(s.pitch, -70, 70) * Math.PI / 180;
     camera.position.set(
-      r * Math.cos(lat) * Math.sin(lon),
-      r * Math.sin(lat),
-      r * Math.cos(lat) * Math.cos(lon)
+      r * Math.cos(pitchRad) * Math.sin(yawRad),
+      r * Math.sin(pitchRad),
+      r * Math.cos(pitchRad) * Math.cos(yawRad)
     );
-    camera.lookAt(0, 0, 0);
-    // 地轴倾斜作用在世界空间，和经纬度解耦
-    globeGroup.rotation.z = (s.tiltZ || 0) * Math.PI / 180;
-    globeGroup.updateMatrixWorld();
+    camDir.copy(lookTarget).sub(camera.position).normalize();
+    const up = new THREE.Vector3(0, 1, 0).applyAxisAngle(camDir, (s.tiltZ || 0) * Math.PI / 180);
+    camera.up.copy(up);
+    camera.lookAt(lookTarget);
+
+    // 抓取点放在相机前方固定距离，捏得越紧这一团收得越小、转得越快
+    grabPoints.position.copy(camera.position).add(camDir.clone().multiplyScalar(FIELD.GRAB_DIST));
+    grabPoints.scale.setScalar(1.0 + (1 - grabAmount) * 2.2);
+    grabPoints.rotation.y += 0.006 + grabAmount * 0.02;
   }
 
-  function render() { renderer.render(scene, camera); }
+  /** amount: 0 松手 ~ 1 捏紧。也控制淡入淡出。 */
+  function setGrab(amount) {
+    grabAmount = clamp(amount, 0, 1);
+    grabMix = grabAmount;
+  }
+
+  function render(elapsed) {
+    mat.uniforms.uTime.value = elapsed;
+    grabMat.uniforms.uTime.value = elapsed;
+    grabMat.uniforms.uOpacity.value = grabMix * 0.95;
+    renderer.render(scene, camera);
+  }
 
   function stats() {
-    const info = renderer.info.render;
     return {
-      landPoints: landGeo.attributes.position.count,
-      cityPoints: cities.points.geometry.attributes.position.count,
-      starPoints: stars.geometry.attributes.position.count,
-      drawCalls: info.calls,
-      triangles: info.triangles
+      particles: FIELD.COUNT,
+      grabbed: FIELD.GRAB_COUNT,
+      drawCalls: renderer.info.render.calls,
+      triangles: renderer.info.render.triangles
     };
   }
 
-  /** 鼠标悬停找最近的城市。用屏幕距离判断，比射线求交简单且够用。 */
-  const tmp = new THREE.Vector3();
-  function pickCity(clientX, clientY) {
-    const rect = renderer.domElement.getBoundingClientRect();
-    const mx = clientX - rect.left, my = clientY - rect.top;
-    let best = null, bestD = 24;
-    for (const c of cities.world) {
-      // 背面的点不参与
-      tmp.copy(c.pos).applyMatrix4(globeGroup.matrixWorld);
-      const toCam = camera.position.clone().sub(tmp).normalize();
-      if (tmp.clone().normalize().dot(toCam) < 0.15) continue;
-      tmp.project(camera);
-      const sx = (tmp.x * 0.5 + 0.5) * rect.width;
-      const sy = (-tmp.y * 0.5 + 0.5) * rect.height;
-      const d = Math.hypot(sx - mx, sy - my);
-      if (d < bestD) { bestD = d; best = { name: c.name, x: sx, y: sy }; }
-    }
-    return best;
-  }
-
-  return { THREE, apply, render, resize, stats, pickCity, camera, globeGroup, renderer, dispose() { renderer.dispose(); } };
+  return { THREE, apply, render, resize, stats, setGrab, camera, renderer, scene, dispose() { renderer.dispose(); } };
 }
+
 
 /* ============================== 模型加载 ================================== */
 
@@ -1217,6 +1119,8 @@ function drawCameraFrame(landmarks) {
 
 let lastDetectAt = 0;
 let lastVideoTime = -1;
+let handsForGrab = [];      // 最近一次检测到的手，供渲染循环读捏合程度
+let grabSmooth = 0;         // 抓取程度的平滑值
 let fpsAcc = 0, fpsFrames = 0, fpsStamp = 0;
 let lastFrameAt = 0;
 
@@ -1238,6 +1142,7 @@ function frame(now) {
       const res = landmarker.detectForVideo($video, now);
       hands = (res && res.landmarks) || [];
     } catch (_) { hands = []; }
+    handsForGrab = hands;
 
     // 鼠标刚动过就让手势先等一秒，否则两边会互相抢相机
     const snap = now >= mouseHoldUntil
@@ -1259,8 +1164,16 @@ function frame(now) {
     }
   }
 
+  // 捏合程度直接驱动"抓取一团粒子"：捏得越紧，那一团收得越小、转得越快
+  if (handsForGrab.length) {
+    const f = fingerState(handsForGrab[0]);
+    grabSmooth += (clamp((0.85 - f.pinch) / 0.5, 0, 1) - grabSmooth) * Math.min(1, dt * 12);
+  } else {
+    grabSmooth += (0 - grabSmooth) * Math.min(1, dt * 6);
+  }
+  scene.setGrab(grabSmooth);
   scene.apply(view);
-  scene.render();
+  scene.render(now / 1000);
 }
 
 function updateStatusFromHands(hands, snap) {
@@ -1291,15 +1204,6 @@ function bindMouse(canvas) {
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener('pointermove', (e) => {
-    const hit = scene.pickCity(e.clientX, e.clientY);
-    if (hit) {
-      $tip.textContent = hit.name;
-      $tip.style.left = hit.x + 'px';
-      $tip.style.top = hit.y + 'px';
-      $tip.style.opacity = '1';
-    } else {
-      $tip.style.opacity = '0';
-    }
     if (!dragging) return;
     holdGestures();
     const dx = e.clientX - lastX, dy = e.clientY - lastY;

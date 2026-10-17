@@ -8,8 +8,11 @@ $ErrorActionPreference = "Stop"
 
 Set-Location -LiteralPath ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..")))
 
+New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+
 Copy-Item -LiteralPath "index.html" -Destination "dist\index.html" -Force
 Copy-Item -LiteralPath "campus.html" -Destination "dist\campus.html" -Force
+Copy-Item -LiteralPath "particle.html" -Destination "dist\particle.html" -Force
 Copy-Item -LiteralPath "hand_landmarker.task" -Destination "dist\hand_landmarker.task" -Force
 
 # Campus data must ship too. heights.json travels with it so building heights can
