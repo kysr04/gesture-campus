@@ -53,7 +53,7 @@
     <div id="state"><span id="dot"></span><span id="label">初始化</span></div>
     <div id="hint">
       <b>手掌平移</b> 在粒子中穿行<br>
-      <b>捏合</b> 抓起一团粒子<br>
+      <b>捏合</b> 把周围的粒子吸进掌心<br>
       <b>张开</b> 放掉<br>
       <b>两只手</b> 推进 / 后退<br>
       <b>比 1/2/3/4</b> 跳四个位置
@@ -94,8 +94,11 @@ const CFG = {
   pitchLimit: 70,
   deadzonePx: 2.0,
   smoothMin: 10, smoothBeta: 0.6,
-  grabCount: 420,
-  grabAhead: 6,
+  grabAhead: 7,            // 抓取球心放在相机前方多远
+  grabRadius: 32,          // 引力半径：手心周围这一大球的粒子都会被吸过去
+  grabSpin: 2.9,           // 汇聚时绕视线轴的旋转量，转起来才像"被吸走"
+  grabRamp: 0.30,          // 单个粒子从原位缩到球心的耗时
+  grabWave: 0.45,          // 波前延迟：越远的粒子越晚动，形成向内涌的层次
   pinchOpen: 0.85,         // 指距比高于此值视为张开
   pinchShut: 0.35,         // 低于此值视为捏紧
   jumpHold: 0.4,           // 比数字保持多久
@@ -141,6 +144,9 @@ const HAND_EDGES = [
 /* ------------------------------ 工具 ---------------------------------- */
 
 const clamp = (v,a,b)=> v<a?a:v>b?b:v;
+const DEBUG_GRAB = new URLSearchParams(location.search).get('grab') === '1';
+// grab=2 直接把抓取状态钉在"完全收拢"，用来截图看最终形态
+const DEBUG_GRAB_HOLD = new URLSearchParams(location.search).get('grab') === '2';
 const lerp = (a,b,t)=> a+(b-a)*t;
 const wait = ms=> new Promise(r=>setTimeout(r,ms));
 
@@ -182,8 +188,8 @@ let bob = 0;               // 相机前向惯量
 const stage = document.getElementById('stage');
 const glCanvas = document.getElementById('gl');
 let THREE = null, renderer = null, scene = null, camera = null;
-let field = null, grabGroup = null, grabMat = null;
-let grabMix = 0, grabTarget = 0;
+let field = null, glow = null;
+let grabMix = 0, grabTarget = 0, grabT = 0;
 
 async function loadThree(onStage){
   let err = null;
@@ -199,6 +205,11 @@ function fieldMaterial(){
     uniforms: {
       uTime: { value: 0 },
       uOpacity: { value: 1 },
+      uGrab: { value: new THREE.Vector3(0, 0, -999) },   // 抓取中心（世界坐标）
+      uGrabAxis: { value: new THREE.Vector3(0, 0, 1) },  // 汇聚旋转轴（视线方向）
+      uGrabR: { value: 26 },                             // 影响半径
+      uGrabK: { value: 0 },                              // 强度 0~1
+      uGrabT: { value: 0 },                              // 从捏下开始经过的秒数
       cA: { value: new THREE.Color(0x9fe8ff) },
       cB: { value: new THREE.Color(0x6f9dff) },
       cC: { value: new THREE.Color(0xd6c4ff) }
@@ -206,29 +217,69 @@ function fieldMaterial(){
     vertexShader: `
       attribute float aSeed; attribute float aTint;
       uniform float uTime;
-      varying float vShade; varying float vTint;
+      uniform vec3 uGrab; uniform vec3 uGrabAxis;
+      uniform float uGrabR; uniform float uGrabK; uniform float uGrabT;
+      varying float vShade; varying float vTint; varying float vWarm;
+
+      vec3 rotAxis(vec3 v, vec3 axis, float ang){
+        float c = cos(ang), s = sin(ang);
+        return v*c + cross(axis, v)*s + axis*dot(axis, v)*(1.0-c);
+      }
+
       void main(){
         vec3 p = position;
         float t = uTime * 0.35 + aSeed * 6.283;
         p.x += sin(t * 0.70) * 1.6;
         p.y += cos(t * 0.53) * 1.1;
         p.z += sin(t * 0.61 + 1.7) * 1.6;
+
+        // 抓取：半径内的粒子先绕视线轴拧一下，再塌进手心里的一颗小球。
+        // 远近不同的粒子错开起跑，所以能看到"一圈圈被吸进去"的层次；
+        // 松开时强度回落，它们顺着原来的方向散回去。
+        float grabW = 0.0;
+        if (uGrabK > 0.001) {
+          vec3 q = p - uGrab;
+          float gd = length(q);
+          float d01 = clamp(gd / uGrabR, 0.0, 1.0);
+          float falloff = 1.0 - smoothstep(0.55, 1.0, d01);
+          float start = clamp((uGrabT - d01 * 0.45) / 0.30, 0.0, 1.0);
+          start = start * start * (3.0 - 2.0 * start);
+          float k = start * uGrabK * falloff;
+          if (k > 0.0005) {
+            vec3 axis = normalize(uGrabAxis);
+            vec3 qr = rotAxis(q, axis, k * 2.9 * (0.55 + 0.75 * (1.0 - d01)) + aSeed * 0.5);
+            // 原本离得近的落进球核，离得远的停在外层，吸完仍有层次
+            float rr = 0.42 + d01 * 1.70 + aSeed * 0.60;
+            // 沿视线方向拉出三条旋臂，聚起来才不是一团白雾
+            vec3 t1 = normalize(cross(axis, vec3(0.0, 1.0, 0.0)) + vec3(1e-4));
+            vec3 t2 = cross(axis, t1);
+            float ang = atan(dot(qr, t2), dot(qr, t1));
+            rr *= 0.90 + 0.22 * sin(ang * 3.0 + rr * 2.4 - uTime * 1.4);
+            vec3 qs = normalize(qr + vec3(1e-4)) * rr;
+            p = uGrab + mix(qr, qs, k);
+            grabW = k;
+          }
+        }
+
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         float d = -mv.z;
-        vShade = clamp(1.0 - (d - 20.0) / 150.0, 0.22, 1.0);
+        vShade = clamp(1.0 - (d - 20.0) / 150.0, 0.22, 1.0) * (1.0 + grabW * 0.35);
         vTint = aTint;
-        gl_PointSize = clamp(150.0 / d, 1.2, 9.0) * (0.7 + aSeed * 0.6);
+        vWarm = grabW;
+        gl_PointSize = clamp(150.0 / d, 1.2, 9.0) * (0.7 + aSeed * 0.6) * (1.0 - 0.50 * grabW);
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
       uniform float uOpacity; uniform vec3 cA; uniform vec3 cB; uniform vec3 cC;
-      varying float vShade; varying float vTint;
+      varying float vShade; varying float vTint; varying float vWarm;
       void main(){
         float r = length(gl_PointCoord - vec2(0.5));
         if (r > 0.5) discard;
         float a = smoothstep(0.5, 0.05, r);
         vec3 col = mix(mix(cA, cB, vTint), cC, smoothstep(0.75, 1.0, vTint));
-        gl_FragColor = vec4(col, a * vShade * uOpacity);
+        // 被抓住的粒子往暖白偏，聚成球时核心才有"发光"的感觉
+        col = mix(col, vec3(1.0, 0.94, 0.80), vWarm * 0.55);
+        gl_FragColor = vec4(col, a * vShade * uOpacity * (1.0 - 0.38 * vWarm));
       }`,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
   });
@@ -254,23 +305,39 @@ function buildField(){
   return g;
 }
 
-function buildGrabCloud(){
-  const n = CFG.grabCount;
-  const pos = new Float32Array(n*3), seed = new Float32Array(n);
-  for (let i=0;i<n;i++){
-    const u = Math.random()*2-1, th = Math.random()*Math.PI*2;
-    const rr = Math.sqrt(Math.max(0,1-u*u));
-    const R = 1.2 + Math.random()*2.4;
-    pos[i*3]   = rr*Math.cos(th)*R;
-    pos[i*3+1] = u*R;
-    pos[i*3+2] = rr*Math.sin(th)*R;
-    seed[i] = Math.random();
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(pos,3));
-  g.setAttribute('aSeed', new THREE.BufferAttribute(seed,1));
-  g.setAttribute('aTint', new THREE.BufferAttribute(seed.slice(),1));
-  return g;
+/** 手心里那团光的贴图：中心亮核 + 一圈很淡的外环。 */
+function glowTexture(){
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(128,128,0,128,128,128);
+  g.addColorStop(0.00, 'rgba(255,255,255,1)');
+  g.addColorStop(0.14, 'rgba(226,246,255,0.80)');
+  g.addColorStop(0.34, 'rgba(120,196,255,0.28)');
+  g.addColorStop(0.62, 'rgba(74,140,255,0.10)');
+  g.addColorStop(1.00, 'rgba(60,110,255,0)');
+  x.fillStyle = g;
+  x.fillRect(0,0,256,256);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function buildGlow(){
+  const mat = new THREE.SpriteMaterial({
+    map: glowTexture(),
+    color: 0xbfe4ff,
+    transparent: true,
+    opacity: 0,
+    depthTest: false,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+  const s = new THREE.Sprite(mat);
+  s.scale.setScalar(4.2);
+  s.renderOrder = 5;
+  s.frustumCulled = false;
+  return s;
 }
 
 async function buildScene(onStage){
@@ -286,11 +353,8 @@ async function buildScene(onStage){
   field = new THREE.Points(buildField(), fieldMaterial());
   scene.add(field);
 
-  grabMat = fieldMaterial();
-  grabMat.uniforms.uOpacity.value = 0;
-  grabGroup = new THREE.Points(buildGrabCloud(), grabMat);
-  grabGroup.frustumCulled = false;
-  scene.add(grabGroup);
+  glow = buildGlow();
+  scene.add(glow);
 
   resize();
   window.addEventListener('resize', resize);
@@ -320,15 +384,28 @@ function applyCamera(dt, elapsed){
   camera.up.copy(up);
   camera.lookAt(0,0,0);
 
-  // 抓取团固定在相机前方，捏得越紧收得越小、转得越快
-  grabMix = smoothTo(grabMix, grabTarget, 9, dt);
-  grabGroup.position.copy(camera.position).addScaledVector(dir, CFG.grabAhead);
-  grabGroup.scale.setScalar(1 + (1-grabMix)*2.2);
-  grabGroup.rotation.y += (0.006 + grabMix*0.02);
+  // 抓取：捏下时计时器开始跑，粒子按"由近到远"的顺序被吸进手心；
+  // 松开后强度回落，计时器等回弹结束再归零。
+  grabMix = smoothTo(grabMix, grabTarget, grabTarget > 0 ? 16 : 8, dt);
+  if (grabTarget > 0) grabT = Math.min(grabT + dt, 3.0);
+  else if (grabMix < 0.02) grabT = 0;
+  if (DEBUG_GRAB_HOLD) { grabMix = 1; grabT = 3; }
 
-  field.material.uniforms.uTime.value = elapsed;
-  grabMat.uniforms.uTime.value = elapsed;
-  grabMat.uniforms.uOpacity.value = grabMix * 0.95;
+  const grabPoint = camera.position.clone().addScaledVector(dir, CFG.grabAhead);
+  const fu = field.material.uniforms;
+  fu.uGrab.value.copy(grabPoint);
+  fu.uGrabAxis.value.copy(dir);
+  fu.uGrabK.value = grabMix;
+  fu.uGrabT.value = grabT;
+  fu.uGrabR.value = CFG.grabRadius;
+  fu.uTime.value = elapsed;
+
+  if (glow) {
+    glow.position.copy(grabPoint);
+    glow.scale.setScalar(3.4 + 2.4 * grabMix);
+    glow.material.opacity = grabMix * 0.7;
+    glow.material.color.setRGB(0.72 + 0.28*grabMix, 0.86 + 0.12*grabMix, 1.0);
+  }
   renderer.render(scene, camera);
 }
 
@@ -364,7 +441,7 @@ function stepHands(hands, now, dt){
   if (!hasHand) {
     lostCount++;
     if (lostCount === CFG.lostFrames) { prevPalm = null; moveBuf = []; }
-    grabTarget = 0;
+    grabTarget = DEBUG_GRAB ? 1 : 0;
     setLabel('未检测到手', '#4a9dff');
     return;
   }
@@ -447,6 +524,7 @@ function stepHands(hands, now, dt){
   // 捏合 = 抓取。指距比越小捏得越紧。
   const pinch = clamp((CFG.pinchOpen - f.pinch) / (CFG.pinchOpen - CFG.pinchShut), 0, 1);
   grabTarget = pinch > 0.55 ? pinch : 0;
+  if (DEBUG_GRAB) grabTarget = 1;      // 调试用：?grab=1 强制抓取，方便无手时看效果
 
   setLabel(grabTarget > 0.5 ? '抓取中' : '穿行中',
            grabTarget > 0.5 ? '#ffd166' : '#37e08a');
@@ -504,7 +582,7 @@ function loop(now){
     catch(_) { hands = []; }
     stepHands(hands, now, dt);
     drawCamera(hands);
-    if (!hands.length) { grabTarget = 0; }
+    if (!hands.length && !DEBUG_GRAB) { grabTarget = 0; }
   }
 
   applyCamera(dt, now/1000);
@@ -638,6 +716,19 @@ goBtn.addEventListener('click', async ()=>{
   running = true;
   setLabel('未检测到手', '#4a9dff');
 });
+
+// 调试用：控制台里能读到当前抓取状态
+window.__dbg = () => ({
+  grabMix, grabT, grabTarget, dist: view.dist,
+  grabRadius: CFG.grabRadius,
+  cam: camera ? camera.position.toArray().map(v => +v.toFixed(2)) : null
+});
+// 测试用：喂合成的关键点，不依赖摄像头
+window.__test = {
+  step: (hands, now, dt) => { stepHands(hands, now, dt); applyCamera(dt, now/1000); },
+  state: () => ({ grabMix, grabT, grabTarget, yaw: view.yaw, pitch: view.pitch, dist: view.dist }),
+  reset: () => { prevPalm = null; moveBuf = []; stepHands.lastCount = -1; stepHands.gapBase = null; }
+};
 
 boot0();
 </script>
