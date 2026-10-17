@@ -11,3 +11,8 @@ work/deploy/node_modules/
 work/deploy/.wrangler/
 # 部署产物是构建输出，不入库（否则 7.8MB 的模型会在仓库里存两份）
 dist/
+# wrangler 在项目根目录跑过一次留下的缓存，可能含账号信息，不入库
+.wrangler/
+# Python 字节码
+__pycache__/
+*.pyc

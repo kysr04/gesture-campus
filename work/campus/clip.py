@@ -11,7 +11,8 @@ import json
 import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.join(HERE, "campus.json")
+# 直接改写最终产物，不在 work 里留一份副本——两份并存迟早会不同步。
+SRC = os.path.abspath(os.path.join(HERE, "..", "..", "campus", "campus.json"))
 
 
 def point_in_ring(x, z, ring):
