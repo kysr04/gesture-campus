@@ -83,7 +83,7 @@
 /* ------------------------------ 参数 ---------------------------------- */
 
 const CFG = {
-  particles: 150000,       // 点数。人像要认得出脸，得靠密度堆出明暗
+  particles: 120000,       // 点数：认得出脸，又留得住颗粒间隙
   shellInner: 12,          // 云内半径要小于相机轨道半径，粒子才会从身边掠过
   shellOuter: 95,
   orbitBase: 9,            // 相机轨道半径 = orbitBase + dist * orbitGain
@@ -277,12 +277,12 @@ function fieldMaterial(){
         // 人像：每颗粒子按自己的节奏飞向照片上的一个像素点。
         // 目标位置在相机坐标里，所以人像始终朝着你，不会被看成一张纸片。
         vec3 targetW = uPCenter + uPRight * aTarget.x + uPUp * aTarget.y + uPNormal * aTarget.z;
-        // 人像态下每颗粒子自己轻轻抖，照片才不会像一块静止的贴图
+        // 人像态下每颗粒子持续漂动，看起来是一群活粒子，不是静态贴图
         targetW += vec3(
-          sin(uTime * 0.9 + aSeed * 41.0),
-          cos(uTime * 0.7 + aSeed * 29.0),
-          sin(uTime * 1.1 + aSeed * 17.0)
-        ) * (0.035 + aSeed * 0.05);
+          sin(uTime * 0.8 + aSeed * 41.0),
+          cos(uTime * 0.62 + aSeed * 29.0),
+          sin(uTime * 0.95 + aSeed * 17.0)
+        ) * (0.18 + aSeed * 0.30);
         float mp = clamp(uMorph * 1.35 - aSeed * 0.25, 0.0, 1.0);
         mp = mp * mp * (3.0 - 2.0 * mp);
         // 起步快、收尾慢：先一批批冲进来，最后再轻轻落位，
@@ -300,7 +300,7 @@ function fieldMaterial(){
         vSeed = aSeed;
         vColor = aColor;
         float sz = clamp(150.0 / d, 1.2, 9.0) * (0.7 + aSeed * 0.6) * (1.0 - 0.50 * grabW);
-        gl_PointSize = mix(sz, 2.6 * (0.7 + aSeed * 0.5), mp);
+        gl_PointSize = mix(sz, 3.3 * (0.55 + aSeed * 0.7), mp);
         gl_PointSize *= 1.0 + sin(3.14159 * mp) * 0.55;   // 飞行途中更大，聚拢过程才看得见
         gl_Position = projectionMatrix * mv;
       }`,
@@ -327,7 +327,7 @@ function fieldMaterial(){
         alpha *= mix(1.0, uPhotoGain, vPhoto) * (1.0 + vEdge * 0.25)
                * (1.0 + transit * 0.55);
         // 人像态每颗粒子自己呼吸，整张脸才会"活"起来
-        float tw = 0.86 + 0.14 * sin(uTime * 2.4 + vSeed * 62.83);
+        float tw = 0.68 + 0.32 * sin(uTime * 3.0 + vSeed * 62.83);
         alpha *= mix(1.0, tw, vPhoto);
         gl_FragColor = vec4(col, alpha);
       }`,
@@ -407,7 +407,7 @@ async function loadPortrait(n){
     target[i*3]   = (sx / W - 0.5) * planeW + (Math.random() - 0.5) * jx;
     target[i*3+1] = -(sy / H - 0.5) * planeH + (Math.random() - 0.5) * jy;
     // 有厚度的一层，转一点角度也能看出是立体的粒子云
-    target[i*3+2] = (Math.random() - 0.5) * 1.6;
+    target[i*3+2] = (Math.random() - 0.5) * 2.0;
     edgeAttr[i] = edge[k];
     const p = k * 4;
     // 单色全息：亮度全部由照片明暗决定，颜色统一青白，
