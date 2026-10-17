@@ -83,7 +83,7 @@
 /* ------------------------------ 参数 ---------------------------------- */
 
 const CFG = {
-  particles: 90000,        // 点数。着色器渲染，涨到十万级也几乎不吃 CPU
+  particles: 150000,       // 点数。人像要认得出脸，得靠密度堆出明暗
   shellInner: 12,          // 云内半径要小于相机轨道半径，粒子才会从身边掠过
   shellOuter: 95,
   orbitBase: 9,            // 相机轨道半径 = orbitBase + dist * orbitGain
@@ -381,9 +381,9 @@ async function loadPortrait(n){
   for (let i = 0, p = 0; i < N; i++, p += 4) {
     if (px[p + 3] > 60) cand.push(i);
     if (px[p + 3] > 60) {
-      // 轮廓优先：五官是靠眼睛、眉毛、嘴唇这些边界认出来的，
-      // 所以点主要撒在轮廓上，身体内部只留少量当微弱填充。
-      total += 0.10 + edge[i] * 3.0;
+      // 明暗主导：亮的地方粒子多，暗的地方粒子少，五官就靠明暗堆出来；
+      // 边界再加一点权重，眼睛、眉毛、嘴唇的轮廓会更清楚。
+      total += 0.08 + Math.pow(lum[i], 1.5) * 2.2 + edge[i] * 0.8;
       cum.push(total);
     }
   }
@@ -410,12 +410,12 @@ async function loadPortrait(n){
     target[i*3+2] = (Math.random() - 0.5) * 1.6;
     edgeAttr[i] = edge[k];
     const p = k * 4;
-    // 统一成青白发光色，明暗只用来提一点层次，
-    // 这样它是"由光点组成的人"，而不是一张上了色的照片
-    const lv = lum[k];
-    color[i*3]   = 0.42 + 0.38 * lv;
-    color[i*3+1] = 0.62 + 0.28 * lv;
-    color[i*3+2] = 0.96;
+    // 单色全息：亮度全部由照片明暗决定，颜色统一青白，
+    // 这样能认出是谁，又一眼看出是粒子
+    const lv = 0.25 + 0.75 * lum[k];
+    color[i*3]   = lv * 0.70;
+    color[i*3+1] = lv * 0.84;
+    color[i*3+2] = lv;
   }
   return { target, color, edge: edgeAttr, planeW, planeH };
 }
