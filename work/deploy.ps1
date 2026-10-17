@@ -13,6 +13,7 @@ New-Item -ItemType Directory -Force -Path "dist" | Out-Null
 Copy-Item -LiteralPath "index.html" -Destination "dist\index.html" -Force
 Copy-Item -LiteralPath "campus.html" -Destination "dist\campus.html" -Force
 Copy-Item -LiteralPath "particle.html" -Destination "dist\particle.html" -Force
+Copy-Item -LiteralPath "portrait.html" -Destination "dist\portrait.html" -Force
 Copy-Item -LiteralPath "hand_landmarker.task" -Destination "dist\hand_landmarker.task" -Force
 
 # Portrait assets used by particle.html
