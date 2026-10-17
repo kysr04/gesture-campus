@@ -227,10 +227,10 @@ function fieldMaterial(){
       uPRight: { value: new THREE.Vector3(1,0,0) },
       uPUp: { value: new THREE.Vector3(0,1,0) },
       uPNormal: { value: new THREE.Vector3(0,0,1) },
-      uPhotoGain: { value: 0.55 },                       // 人像态粒子的不透明度
+      uPhotoGain: { value: 0.92 },                       // 人像态粒子的不透明度
       uDrift: { value: Number.isFinite(TUNE.drift) ? TUNE.drift : 0.12 },
       uTwinkle: { value: Number.isFinite(TUNE.tw) ? TUNE.tw : 0.18 },
-      uSize: { value: Number.isFinite(TUNE.size) ? TUNE.size : 3.0 },
+      uSize: { value: Number.isFinite(TUNE.size) ? TUNE.size : 4.0 },
       cA: { value: new THREE.Color(0x9fe8ff) },
       cB: { value: new THREE.Color(0x6f9dff) },
       cC: { value: new THREE.Color(0xd6c4ff) }
@@ -390,6 +390,7 @@ async function loadPortrait(n){
 
   const cand = [];
   const cum = [];
+  const EDGE_W = Number.isFinite(TUNE.edge) ? TUNE.edge : 1.6;
   let total = 0;
   for (let i = 0, p = 0; i < N; i++, p += 4) {
     if (px[p + 3] > 60) cand.push(i);
@@ -413,7 +414,6 @@ async function loadPortrait(n){
   const color = new Float32Array(n * 3);
   const edgeAttr = new Float32Array(n);
   const jx = planeW / W, jy = planeH / H;
-  const EDGE_W = Number.isFinite(TUNE.edge) ? TUNE.edge : 1.6;
 
   for (let i = 0; i < n; i++) {
     const k = pick(Math.random() * total);
@@ -425,7 +425,7 @@ async function loadPortrait(n){
     edgeAttr[i] = edge[k];
     const p = k * 4;
     // 蓝色科技感：色相固定成蓝青，明暗只改亮度，不发白
-    const lv = 0.12 + 0.88 * lum[k];
+    const lv = 0.16 + 0.84 * lum[k];
     color[i*3]   = lv * 0.30;
     color[i*3+1] = lv * 0.72;
     color[i*3+2] = lv * 1.00;

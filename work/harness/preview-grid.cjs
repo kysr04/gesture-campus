@@ -8,9 +8,9 @@ const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const BASE = "http://127.0.0.1:8765/particle.html?portrait=1";
 
 const VARIANTS = [
-  { file: "blue-1", q: "&n=60000&edge=1.8&size=3.0&drift=0.10&tw=0.15" },
-  { file: "blue-2", q: "&n=90000&edge=1.6&size=2.8&drift=0.10&tw=0.15" },
-  { file: "blue-3", q: "&n=120000&edge=1.4&size=2.6&drift=0.10&tw=0.15" }
+  { file: "blue-1", q: "&n=60000&edge=1.8&size=4.6&drift=0.10&tw=0.15" },
+  { file: "blue-2", q: "&n=90000&edge=1.6&size=4.1&drift=0.10&tw=0.15" },
+  { file: "blue-3", q: "&n=120000&edge=1.4&size=3.6&drift=0.10&tw=0.15" }
 ];
 
 (async () => {
