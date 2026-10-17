@@ -425,7 +425,7 @@ async function loadPortrait(n, mode){
   // JSON 的 r 是原图像素半径，按屏幕高度等比换算成屏幕像素。
   const visH = 2 * PORTRAIT.ahead * Math.tan(31 * Math.PI / 180);
   const screenH = (jplaneH / visH) * (window.innerHeight || 800);
-  const rScale = (screenH / spanY) * 2.0 * (renderer ? renderer.getPixelRatio() : 1);
+  const rScale = (screenH / spanY) * 3.5 * (renderer ? renderer.getPixelRatio() : 1);
 
   for (let i = 0; i < n; i++) {
     const p = pts[i % pts.length];
@@ -989,7 +989,7 @@ function applyCamera(dt, elapsed){
   if (aura) {
     aura.position.copy(camera.position).addScaledVector(fwd, PORTRAIT.ahead + 0.55);
     if (portraitInfo) aura.scale.set(portraitInfo.planeW * 1.35, portraitInfo.planeH * 1.20, 1);
-    aura.material.opacity = portraitMix * 0.18;
+    aura.material.opacity = portraitMix * 0.08;
   }
   renderer.render(scene, camera);
 }
