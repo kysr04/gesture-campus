@@ -148,6 +148,14 @@ const DEBUG_GRAB = new URLSearchParams(location.search).get('grab') === '1';
 const DEBUG_GRAB_HOLD = new URLSearchParams(location.search).get('grab') === '2';
 const DEBUG_PORTRAIT = new URLSearchParams(location.search).get('portrait') === '1';
 const DEBUG_MORPH = parseFloat(new URLSearchParams(location.search).get('morph'));
+// 三个可调项：n=粒子数，drift=漂移幅度，tw=闪烁幅度
+const QS = new URLSearchParams(location.search);
+const TUNE = {
+  n: parseInt(QS.get('n'), 10),
+  drift: parseFloat(QS.get('drift')),
+  tw: parseFloat(QS.get('tw'))
+};
+if (Number.isFinite(TUNE.n) && TUNE.n >= 20000 && TUNE.n <= 220000) CFG.particles = TUNE.n;
 const lerp = (a,b,t)=> a+(b-a)*t;
 const wait = ms=> new Promise(r=>setTimeout(r,ms));
 
@@ -218,6 +226,8 @@ function fieldMaterial(){
       uPUp: { value: new THREE.Vector3(0,1,0) },
       uPNormal: { value: new THREE.Vector3(0,0,1) },
       uPhotoGain: { value: 0.55 },                       // 人像态粒子的不透明度
+      uDrift: { value: Number.isFinite(TUNE.drift) ? TUNE.drift : 0.12 },
+      uTwinkle: { value: Number.isFinite(TUNE.tw) ? TUNE.tw : 0.18 },
       cA: { value: new THREE.Color(0x9fe8ff) },
       cB: { value: new THREE.Color(0x6f9dff) },
       cC: { value: new THREE.Color(0xd6c4ff) }
@@ -229,7 +239,7 @@ function fieldMaterial(){
       uniform vec3 uGrab; uniform vec3 uGrabAxis;
       uniform float uGrabR; uniform float uGrabK; uniform float uGrabT;
       uniform vec3 uPCenter; uniform vec3 uPRight; uniform vec3 uPUp; uniform vec3 uPNormal;
-      uniform float uMorph;
+      uniform float uMorph; uniform float uDrift;
       varying float vShade; varying float vTint; varying float vWarm; varying float vPhoto; varying float vEdge;
       varying float vSeed;
       varying vec3 vColor;
@@ -282,7 +292,7 @@ function fieldMaterial(){
           sin(uTime * 0.8 + aSeed * 41.0),
           cos(uTime * 0.62 + aSeed * 29.0),
           sin(uTime * 0.95 + aSeed * 17.0)
-        ) * (0.09 + aSeed * 0.14);
+        ) * (uDrift * (0.5 + aSeed * 0.9));
         float mp = clamp(uMorph * 1.35 - aSeed * 0.25, 0.0, 1.0);
         mp = mp * mp * (3.0 - 2.0 * mp);
         // 起步快、收尾慢：先一批批冲进来，最后再轻轻落位，
@@ -306,7 +316,7 @@ function fieldMaterial(){
       }`,
     fragmentShader: `
       uniform float uOpacity; uniform vec3 cA; uniform vec3 cB; uniform vec3 cC;
-      uniform float uPhotoGain; uniform float uTime;
+      uniform float uPhotoGain; uniform float uTime; uniform float uTwinkle;
       varying float vShade; varying float vTint; varying float vWarm; varying float vPhoto; varying float vEdge;
       varying vec3 vColor; varying float vSeed;
       void main(){
@@ -327,7 +337,7 @@ function fieldMaterial(){
         alpha *= mix(1.0, uPhotoGain, vPhoto) * (1.0 + vEdge * 0.25)
                * (1.0 + transit * 0.55);
         // 人像态每颗粒子自己呼吸，整张脸才会"活"起来
-        float tw = 0.78 + 0.18 * sin(uTime * 2.6 + vSeed * 62.83);
+        float tw = 1.0 - uTwinkle + uTwinkle * sin(uTime * 2.6 + vSeed * 62.83);
         alpha *= mix(1.0, tw, vPhoto);
         gl_FragColor = vec4(col, alpha);
       }`,
