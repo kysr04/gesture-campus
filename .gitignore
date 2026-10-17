@@ -16,3 +16,6 @@ dist/
 # Python 字节码
 __pycache__/
 *.pyc
+# 这两份是根目录同名文件的副本，只留一份（根目录那份才是要部署的）
+work/hand_landmarker.task
+work/campus/campus.json
