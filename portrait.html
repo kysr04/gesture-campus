@@ -346,7 +346,7 @@ function fieldMaterial(){
         vDust = dust * mp;
         vDepth = local.z;
         vAlpha = aAlpha;
-        float sz = clamp(150.0 / d, 1.2, 9.0) * (0.7 + aSeed * 0.6) * (1.0 - 0.30 * grabW);
+        float sz = clamp(150.0 / d, 1.2, 9.0) * (0.7 + aSeed * 0.6) * (1.0 + 0.20 * grabW);
         gl_PointSize = mix(sz, aSize, mp);
         gl_PointSize *= 1.0 + sin(3.14159 * mp) * 0.22;   // 飞行途中只轻微放大，落位时不炸成光团
         gl_Position = projectionMatrix * mv;
@@ -374,7 +374,7 @@ function fieldMaterial(){
         // 半路只闪一层蓝光，持续时间短，不会把整张脸洗白。
         float transit = sin(3.14159 * vPhoto);
         col = mix(col, vec3(0.10, 0.46, 1.0), transit * 0.24);
-        float alpha = a * vShade * uOpacity * mix(1.0, 0.50, vWarm);
+        float alpha = a * vShade * uOpacity * mix(1.0, 0.92, vWarm);
         alpha *= mix(1.0, vAlpha, vPhoto);
         alpha *= mix(1.0, 1.0 + vEdge * 0.55, vPhoto);
         alpha *= 1.0 + transit * 0.18;
@@ -952,7 +952,7 @@ function applyCamera(dt, elapsed){
   if (glow) {
     glow.position.copy(grabPoint);
     glow.scale.setScalar(3.0 + 1.6 * grabMix);
-    glow.material.opacity = grabMix * 0.25;
+    glow.material.opacity = grabMix * 0.45;
     glow.material.color.setRGB(1.0, 0.30 + 0.18 * grabMix, 0.46 + 0.20 * grabMix);
   }
 
