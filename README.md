@@ -7,8 +7,8 @@
 
 | 文件 | 内容 |
 |---|---|
-| `index.html` | 北京化工大学（昌平校区）3D 场景。建筑轮廓来自 OpenStreetMap 真实数据 |
-| `globe.html` | 手势控制的地球仪版本，保留备用 |
+| `index.html` | 手势控制的地球仪（主页） |
+| `campus.html` | 北京化工大学（昌平校区）3D 场景。建筑轮廓来自 OpenStreetMap 真实数据 |
 
 两个页面共用同一套手势系统：单手拖拽旋转、双手捏合缩放、比 1/2/3/4 跳转机位、
 手离开画面冻结。
@@ -21,7 +21,7 @@
 
 ```
 index.html
-globe.html
+campus.html
 hand_landmarker.task     ← 手部识别模型，7.8MB
 campus/campus.json       ← 校区几何数据
 campus/heights.json      ← 建筑高度覆盖表

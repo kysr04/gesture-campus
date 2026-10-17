@@ -17,7 +17,7 @@
 <script type="module">
 import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
 
-const DATA_URL = '/work/campus/campus.json';
+const DATA_URL = '/campus/campus.json';
 
 const host = document.getElementById('host');
 const hud = document.getElementById('hud');
@@ -117,9 +117,10 @@ if (data.campus) {
     new THREE.LineBasicMaterial({ color: 0x3f6ea8 })));
 }
 
-// 相机：从南侧斜上方看
-const dist = span * 0.95;
-camera.position.set(cx, dist * 0.72, cz + dist * 0.85);
+// 正俯视平面图：用来跟官网那张手绘地图对照，看楼的位置对不对
+const dist = span * 1.02;
+camera.position.set(cx, dist, cz + 0.01);
+camera.up.set(0, 0, -1);
 camera.lookAt(cx, 0, cz);
 
 hud.innerHTML =
