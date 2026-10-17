@@ -217,7 +217,7 @@ function fieldMaterial(){
       uPRight: { value: new THREE.Vector3(1,0,0) },
       uPUp: { value: new THREE.Vector3(0,1,0) },
       uPNormal: { value: new THREE.Vector3(0,0,1) },
-      uPhotoGain: { value: 0.60 },                       // 人像态粒子的不透明度
+      uPhotoGain: { value: 0.55 },                       // 人像态粒子的不透明度
       cA: { value: new THREE.Color(0x9fe8ff) },
       cB: { value: new THREE.Color(0x6f9dff) },
       cC: { value: new THREE.Color(0xd6c4ff) }
@@ -383,7 +383,7 @@ async function loadPortrait(n){
     if (px[p + 3] > 60) {
       // 明暗主导：亮的地方粒子多，暗的地方粒子少，五官就靠明暗堆出来；
       // 边界再加一点权重，眼睛、眉毛、嘴唇的轮廓会更清楚。
-      total += 0.08 + Math.pow(lum[i], 1.5) * 2.2 + edge[i] * 0.8;
+      total += 0.04 + Math.pow(lum[i], 1.9) * 1.9 + edge[i] * 1.4;
       cum.push(total);
     }
   }
@@ -412,7 +412,7 @@ async function loadPortrait(n){
     const p = k * 4;
     // 单色全息：亮度全部由照片明暗决定，颜色统一青白，
     // 这样能认出是谁，又一眼看出是粒子
-    const lv = 0.25 + 0.75 * lum[k];
+    const lv = 0.20 + 0.80 * lum[k];
     color[i*3]   = lv * 0.70;
     color[i*3+1] = lv * 0.84;
     color[i*3+2] = lv;
