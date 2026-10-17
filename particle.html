@@ -83,7 +83,7 @@
 /* ------------------------------ 参数 ---------------------------------- */
 
 const CFG = {
-  particles: 140000,       // 点数：够密才像，动起来才有粒子感
+  particles: 90000,        // 点数：密度不用太高，轮廓清楚了就够
   shellInner: 12,          // 云内半径要小于相机轨道半径，粒子才会从身边掠过
   shellOuter: 95,
   orbitBase: 9,            // 相机轨道半径 = orbitBase + dist * orbitGain
@@ -153,7 +153,9 @@ const QS = new URLSearchParams(location.search);
 const TUNE = {
   n: parseInt(QS.get('n'), 10),
   drift: parseFloat(QS.get('drift')),
-  tw: parseFloat(QS.get('tw'))
+  tw: parseFloat(QS.get('tw')),
+  size: parseFloat(QS.get('size')),
+  edge: parseFloat(QS.get('edge'))
 };
 if (Number.isFinite(TUNE.n) && TUNE.n >= 20000 && TUNE.n <= 220000) CFG.particles = TUNE.n;
 const lerp = (a,b,t)=> a+(b-a)*t;
@@ -197,7 +199,7 @@ let bob = 0;               // 相机前向惯量
 const stage = document.getElementById('stage');
 const glCanvas = document.getElementById('gl');
 let THREE = null, renderer = null, scene = null, camera = null;
-let field = null, glow = null;
+let field = null, glow = null, aura = null;
 let grabMix = 0, grabTarget = 0, grabT = 0;
 let portraitMix = 0, portraitTarget = 0;
 
@@ -228,6 +230,7 @@ function fieldMaterial(){
       uPhotoGain: { value: 0.55 },                       // 人像态粒子的不透明度
       uDrift: { value: Number.isFinite(TUNE.drift) ? TUNE.drift : 0.12 },
       uTwinkle: { value: Number.isFinite(TUNE.tw) ? TUNE.tw : 0.18 },
+      uSize: { value: Number.isFinite(TUNE.size) ? TUNE.size : 3.0 },
       cA: { value: new THREE.Color(0x9fe8ff) },
       cB: { value: new THREE.Color(0x6f9dff) },
       cC: { value: new THREE.Color(0xd6c4ff) }
@@ -239,7 +242,7 @@ function fieldMaterial(){
       uniform vec3 uGrab; uniform vec3 uGrabAxis;
       uniform float uGrabR; uniform float uGrabK; uniform float uGrabT;
       uniform vec3 uPCenter; uniform vec3 uPRight; uniform vec3 uPUp; uniform vec3 uPNormal;
-      uniform float uMorph; uniform float uDrift;
+      uniform float uMorph; uniform float uDrift; uniform float uSize;
       varying float vShade; varying float vTint; varying float vWarm; varying float vPhoto; varying float vEdge;
       varying float vSeed;
       varying vec3 vColor;
@@ -310,7 +313,7 @@ function fieldMaterial(){
         vSeed = aSeed;
         vColor = aColor;
         float sz = clamp(150.0 / d, 1.2, 9.0) * (0.7 + aSeed * 0.6) * (1.0 - 0.50 * grabW);
-        gl_PointSize = mix(sz, 2.7 * (0.6 + aSeed * 0.6), mp);
+        gl_PointSize = mix(sz, uSize * (0.6 + aSeed * 0.6), mp);
         gl_PointSize *= 1.0 + sin(3.14159 * mp) * 0.55;   // 飞行途中更大，聚拢过程才看得见
         gl_Position = projectionMatrix * mv;
       }`,
@@ -393,7 +396,7 @@ async function loadPortrait(n){
     if (px[p + 3] > 60) {
       // 明暗主导：亮的地方粒子多，暗的地方粒子少，五官就靠明暗堆出来；
       // 边界再加一点权重，眼睛、眉毛、嘴唇的轮廓会更清楚。
-      total += 0.04 + Math.pow(lum[i], 1.9) * 1.9 + edge[i] * 1.4;
+      total += 0.04 + Math.pow(lum[i], 1.9) * 1.9 + edge[i] * EDGE_W;
       cum.push(total);
     }
   }
@@ -410,6 +413,7 @@ async function loadPortrait(n){
   const color = new Float32Array(n * 3);
   const edgeAttr = new Float32Array(n);
   const jx = planeW / W, jy = planeH / H;
+  const EDGE_W = Number.isFinite(TUNE.edge) ? TUNE.edge : 1.6;
 
   for (let i = 0; i < n; i++) {
     const k = pick(Math.random() * total);
@@ -420,12 +424,11 @@ async function loadPortrait(n){
     target[i*3+2] = (Math.random() - 0.5) * 1.3;
     edgeAttr[i] = edge[k];
     const p = k * 4;
-    // 单色全息：亮度全部由照片明暗决定，颜色统一青白，
-    // 这样能认出是谁，又一眼看出是粒子
-    const lv = 0.20 + 0.80 * lum[k];
-    color[i*3]   = lv * 0.70;
-    color[i*3+1] = lv * 0.84;
-    color[i*3+2] = lv;
+    // 蓝色科技感：色相固定成蓝青，明暗只改亮度，不发白
+    const lv = 0.12 + 0.88 * lum[k];
+    color[i*3]   = lv * 0.30;
+    color[i*3+1] = lv * 0.72;
+    color[i*3+2] = lv * 1.00;
   }
   return { target, color, edge: edgeAttr, planeW, planeH };
 }
@@ -495,7 +498,7 @@ async function buildScene(onStage){
 
   renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true, alpha: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CFG.dprLimit));
-  renderer.setClearColor(0x04060e, 1);
+  renderer.setClearColor(0x030916, 1);
 
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(62, 1, 0.5, 4000);
@@ -510,6 +513,16 @@ async function buildScene(onStage){
 
   glow = buildGlow();
   scene.add(glow);
+
+  // 人像背后的蓝色光晕
+  aura = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTexture(), color: 0x1f6bff, transparent: true, opacity: 0,
+    depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending
+  }));
+  aura.scale.setScalar(11);
+  aura.renderOrder = -1;
+  aura.frustumCulled = false;
+  scene.add(aura);
 
   resize();
   window.addEventListener('resize', resize);
@@ -576,6 +589,10 @@ function applyCamera(dt, elapsed){
   fu.uPRight.value.copy(right);
   fu.uPUp.value.copy(upv);
   fu.uPNormal.value.copy(fwd).negate();
+  if (aura) {
+    aura.position.copy(camera.position).addScaledVector(fwd, PORTRAIT.ahead + 1.2);
+    aura.material.opacity = portraitMix * 0.22;
+  }
   renderer.render(scene, camera);
 }
 
